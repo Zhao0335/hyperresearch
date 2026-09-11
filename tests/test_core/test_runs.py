@@ -13,6 +13,7 @@ from hyperresearch.core.runs import (
     init_run,
     list_runs,
     load_manifest,
+    reconcile_spend_from_disk,
     resume_position,
     set_step,
     status_summary,
@@ -94,6 +95,50 @@ class TestStepsAndResume:
         assert any(json.loads(ln)["type"] == "step" for ln in lines)
 
 
+class TestReconcileSpend:
+    def test_reconcile_counts_notes_and_raw_sources(self, tmp_vault):
+        init_run(tmp_vault, "r-000001", budget_usd=1.0)
+        notes = tmp_vault.notes_dir
+        notes.mkdir(parents=True, exist_ok=True)
+        (notes / "alpha.md").write_text("# a\n", encoding="utf-8")
+        (notes / "beta.md").write_text("# b\n", encoding="utf-8")
+        raw = tmp_vault.research_dir / "raw"
+        raw.mkdir(parents=True, exist_ok=True)
+        (raw / "paper.pdf").write_bytes(b"%PDF-1.4")
+
+        m = reconcile_spend_from_disk(tmp_vault, "r-000001")
+        assert m["spend"]["notes_written"] == 2
+        assert m["spend"]["sources_fetched"] == 1
+        # Unit costs: 1*0.02 + 2*0.01 = 0.04 — below the $1 budget.
+        assert m["spend"]["estimated_usd"] == pytest.approx(0.04, abs=1e-4)
+        assert m["status"] == "running"
+
+    def test_reconcile_can_fire_budget(self, tmp_vault):
+        init_run(tmp_vault, "r-000002", budget_usd=0.01)
+        notes = tmp_vault.notes_dir
+        notes.mkdir(parents=True, exist_ok=True)
+        for i in range(5):
+            (notes / f"n{i}.md").write_text(f"# {i}\n", encoding="utf-8")
+
+        m = reconcile_spend_from_disk(tmp_vault, "r-000002")
+        assert m["spend"]["notes_written"] == 5
+        assert m["spend"]["estimated_usd"] >= 0.01
+        assert m["status"] == "blocked"
+        assert m["blocked_on"] == "budget"
+
+    def test_reconcile_keeps_higher_agent_estimate(self, tmp_vault):
+        init_run(tmp_vault, "r-000003")
+        add_spend(tmp_vault, "r-000003", estimated_usd=12.5)
+        m = reconcile_spend_from_disk(tmp_vault, "r-000003")
+        assert m["spend"]["estimated_usd"] == 12.5
+
+    def test_init_records_pid_and_heartbeat(self, tmp_vault):
+        m = init_run(tmp_vault, "r-000004")
+        assert isinstance(m.get("pid"), int)
+        assert m.get("pid") > 0
+        assert m.get("heartbeat_at")
+
+
 class TestBudgetGovernor:
     def test_spend_accumulates(self, tmp_vault):
         init_run(tmp_vault, "b-000001", budget_usd=100.0)
@@ -138,6 +183,7 @@ class TestStatusSummary:
         # Backdate the heartbeat
         m = load_manifest(tmp_vault, "s-000001")
         m["updated_at"] = "2020-01-01T00:00:00+00:00"
+        m["heartbeat_at"] = "2020-01-01T00:00:00+00:00"
         mpath = runs_mod.manifest_path(tmp_vault, "s-000001")
         mpath.write_text(json.dumps(m), encoding="utf-8")
         assert status_summary(tmp_vault, "s-000001")["possibly_stalled"] is True

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Run spend counters and liveness (fixes #92)
+
+- **`finish_run` and `hpr run reconcile` fold on-disk artifacts into `spend`**. Pipeline agents rarely call `hpr run spend`, so a completed run used to report all-zero counters and `--budget` could never fire. Notes under `research/notes/` and raw sources under `research/raw/` written since `started_at` are counted into `notes_written` / `sources_fetched`; spawn events fill `agents_spawned`. `estimated_usd` takes the max of any agent-reported value and a unit-cost estimate so mid-run `add_spend` still wins when it is higher.
+- **Manifest records `pid` and `heartbeat_at`**. `hpr run status` reports `pid_alive` so a host session that died mid-run is distinguishable from one that is still working.
+
 ## [0.11.0] - 2026-09-11
 
 ### SSRF gate + size caps for fetches (builtin, crawl4ai entry points, PDF and image downloads)

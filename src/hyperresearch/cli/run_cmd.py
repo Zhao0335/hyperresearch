@@ -118,6 +118,11 @@ def run_status(
             )
         if summary.get("possibly_stalled"):
             console.print("  [yellow]possibly stalled — no manifest update recently[/]")
+        if summary.get("pid_alive") is False:
+            console.print(
+                "  [yellow]recorded pid is not alive — host session likely died "
+                "while status still says running[/]"
+            )
         resume = summary["resume"]
         console.print(f"  done: {', '.join(resume['done_steps']) or '-'}")
         console.print(f"  next: {resume['next_step'] or '(complete)'}")
@@ -278,6 +283,37 @@ def run_spend(
         output(success(data, vault=str(vault.root)), json_mode=True)
     else:
         console.print(f"  spend: {data['spend']}  status: {data['status']}")
+
+
+@app.command("reconcile")
+def run_reconcile(
+    vault_tag: str | None = typer.Argument(None, help="Run tag (default: newest run)"),
+    json_output: bool = typer.Option(False, "--json", "-j", help="JSON output"),
+) -> None:
+    """Fold on-disk notes/raw sources into spend counters (issue #92)."""
+    from hyperresearch.core.runs import RunError, reconcile_spend_from_disk
+
+    vault = _vault_or_exit(json_output)
+    tag = _resolve_tag(vault, vault_tag, json_output)
+    try:
+        manifest = reconcile_spend_from_disk(vault, tag)
+    except RunError as e:
+        if json_output:
+            output(error(str(e), "RUN_ERROR"), json_mode=True)
+        else:
+            console.print(f"[red]Error:[/] {e}")
+        raise typer.Exit(1)
+    data = {
+        "vault_tag": tag,
+        "spend": manifest["spend"],
+        "status": manifest["status"],
+        "blocked_on": manifest.get("blocked_on"),
+    }
+    if json_output:
+        output(success(data, vault=str(vault.root)), json_mode=True)
+    else:
+        console.print(f"[green]Reconciled spend for {tag}[/]")
+        console.print(f"  {data['spend']}  status: {data['status']}")
 
 
 @app.command("event")

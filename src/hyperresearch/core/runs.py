@@ -23,6 +23,7 @@ vault. Final reports ship to `research/notes/final_report_<vault_tag>.md`.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -51,6 +52,14 @@ STEP_STATUSES = ("pending", "running", "done", "skipped", "failed")
 # A run whose manifest hasn't been touched in this long is flagged
 # possibly-stalled by `hpr run status`.
 STALL_MINUTES = 30
+
+# Default API-equivalent unit costs used when reconciling disk artifacts into
+# `spend.estimated_usd`. Mid-run `add_spend` / `hpr run spend` estimates still
+# win when they are higher — these only prevent a completed run from reporting
+# $0 so the --budget governor can fire.
+DEFAULT_USD_PER_SOURCE = 0.02
+DEFAULT_USD_PER_NOTE = 0.01
+DEFAULT_USD_PER_AGENT = 0.05
 
 
 class RunError(Exception):
@@ -92,14 +101,17 @@ def init_run(
     if query is not None:
         (run_dir / "query.md").write_text(query, encoding="utf-8")
 
+    now = _now()
     manifest = {
         "manifest_version": MANIFEST_VERSION,
         "vault_tag": vault_tag,
         "profile": profile,
         "profile_steps": [str(s) for s in resolved.steps],
         "status": "running",
-        "started_at": _now(),
-        "updated_at": _now(),
+        "started_at": now,
+        "updated_at": now,
+        "heartbeat_at": now,
+        "pid": os.getpid(),
         "budget_usd": budget_usd,
         "blocked_on": None,
         "steps": {},
@@ -126,7 +138,9 @@ def load_manifest(vault, vault_tag: str) -> dict:
 
 
 def _save(vault, vault_tag: str, manifest: dict) -> None:
-    manifest["updated_at"] = _now()
+    now = _now()
+    manifest["updated_at"] = now
+    manifest["heartbeat_at"] = now
     mpath = manifest_path(vault, vault_tag)
     tmp = mpath.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -168,6 +182,11 @@ def set_step(
         ch["status"] = f"step-{step}-{status}"
     _save(vault, vault_tag, manifest)
     record_event(vault, vault_tag, {"type": "step", "step": str(step), "status": status, "chapter": chapter})
+    # Agents rarely call `hpr run spend`; reconciling at step boundaries is what
+    # lets --budget fire mid-run instead of only at `run finish` (#92).
+    if status == "done":
+        reconcile_spend_from_disk(vault, vault_tag)
+        manifest = load_manifest(vault, vault_tag)
     return manifest
 
 
@@ -203,6 +222,115 @@ def add_spend(
         manifest["status"] = "blocked"
         manifest["blocked_on"] = "budget"
     _save(vault, vault_tag, manifest)
+    return manifest
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _count_notes_since(vault, started: datetime | None) -> int:
+    """Markdown notes under research/notes/ written at or after `started`."""
+    notes_dir = vault.notes_dir
+    if not notes_dir.is_dir():
+        return 0
+    count = 0
+    for path in notes_dir.glob("*.md"):
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        except OSError:
+            continue
+        if started is None or mtime >= started:
+            count += 1
+    return count
+
+
+def _count_raw_sources_since(vault, started: datetime | None) -> int:
+    """Raw fetched artifacts (PDFs etc.) under research/raw/ since `started`."""
+    raw_dir = vault.research_dir / "raw"
+    if not raw_dir.is_dir():
+        return 0
+    count = 0
+    for path in raw_dir.iterdir():
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        except OSError:
+            continue
+        if started is None or mtime >= started:
+            count += 1
+    return count
+
+
+def _count_agent_spawns(vault, vault_tag: str) -> int:
+    events_file = vault.run_dir(vault_tag) / EVENTS_NAME
+    if not events_file.exists():
+        return 0
+    count = 0
+    for line in events_file.read_text(encoding="utf-8").splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("type") in ("agent_spawn", "spawn", "agent"):
+            count += 1
+    return count
+
+
+def reconcile_spend_from_disk(vault, vault_tag: str) -> dict:
+    """Fold on-disk notes/raw sources and spawn events into spend counters.
+
+    Pipeline agents often never call `hpr run spend`, so a completed run
+    historically reported all-zero counters and `--budget` could never fire
+    (see #92). Disk is the source of truth for counts; `estimated_usd` takes
+    the max of any agent-reported value and a unit-cost estimate so mid-run
+    `add_spend` still wins when it is more precise or higher.
+    """
+    manifest = load_manifest(vault, vault_tag)
+    started = _parse_iso(manifest.get("started_at"))
+
+    sources = _count_raw_sources_since(vault, started)
+    notes = _count_notes_since(vault, started)
+    agents = max(_count_agent_spawns(vault, vault_tag), int(manifest.get("spend", {}).get("agents_spawned", 0) or 0))
+
+    spend = manifest.setdefault("spend", {})
+    spend["sources_fetched"] = sources
+    spend["notes_written"] = notes
+    spend["agents_spawned"] = agents
+
+    derived_usd = (
+        sources * DEFAULT_USD_PER_SOURCE
+        + notes * DEFAULT_USD_PER_NOTE
+        + agents * DEFAULT_USD_PER_AGENT
+    )
+    spend["estimated_usd"] = round(
+        max(float(spend.get("estimated_usd", 0.0) or 0.0), derived_usd),
+        4,
+    )
+
+    budget = manifest.get("budget_usd")
+    if budget is not None and spend["estimated_usd"] >= budget and manifest["status"] == "running":
+        manifest["status"] = "blocked"
+        manifest["blocked_on"] = "budget"
+
+    _save(vault, vault_tag, manifest)
+    record_event(
+        vault,
+        vault_tag,
+        {
+            "type": "spend_reconcile",
+            "sources_fetched": sources,
+            "notes_written": notes,
+            "agents_spawned": agents,
+            "estimated_usd": spend["estimated_usd"],
+        },
+    )
     return manifest
 
 
@@ -270,20 +398,59 @@ def status_summary(vault, vault_tag: str, stall_minutes: int = STALL_MINUTES) ->
     summary["resume"] = resume_position(manifest)
 
     possibly_stalled = False
+    heartbeat_key = "heartbeat_at" if manifest.get("heartbeat_at") else "updated_at"
     if manifest.get("status") == "running":
         try:
-            updated = datetime.fromisoformat(manifest["updated_at"])
+            updated = datetime.fromisoformat(manifest[heartbeat_key])
             age_min = (datetime.now(UTC) - updated).total_seconds() / 60
             possibly_stalled = age_min > stall_minutes
         except (KeyError, ValueError):
             possibly_stalled = True
     summary["possibly_stalled"] = possibly_stalled
 
+    pid = manifest.get("pid")
+    pid_alive = None
+    if pid is not None and manifest.get("status") == "running":
+        pid_alive = _pid_alive(int(pid))
+    summary["pid_alive"] = pid_alive
+
     budget = manifest.get("budget_usd")
     if budget:
         spent = manifest.get("spend", {}).get("estimated_usd", 0.0)
         summary["budget_remaining_usd"] = round(max(0.0, budget - spent), 4)
     return summary
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort process-liveness check for the recorded run PID."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        # OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION=0x1000)
+        import ctypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def _minutes_between(start: str | None, end: str | None) -> float | None:
@@ -575,6 +742,9 @@ def finish_run(vault, vault_tag: str) -> dict:
     earned it.
     """
     result = verify_run(vault, vault_tag)
+    # Counts (and a unit-cost estimate) come from disk so a finished run never
+    # reports zero spend just because agents skipped `hpr run spend`.
+    reconcile_spend_from_disk(vault, vault_tag)
     manifest = load_manifest(vault, vault_tag)
     manifest["verify"] = {
         "passed": result["passed"],
