@@ -55,7 +55,9 @@ INVARIANTS
 Unpaywall and Europe PMC lookups go through `scholar._fetch_json`; CORE needs
 a bearer header, which that layer cannot send, so it goes through
 `hyperresearch.scholar.base.fetch_json` instead. Both land in the `api_cache`
-table, so re-running a vault is cheap and offline-friendly. Tests monkeypatch
+table, so re-running a vault is cheap and offline-friendly. A resolver that
+is rate-limited (`scholar.RateLimitedError`) is treated as "no OA copy" here
+— OA recovery is best-effort and must never abort a fetch. Tests monkeypatch
 `scholar._http_get_json` and `scholar.base._http_get`; no test here hits the
 network.
 """
@@ -270,10 +272,13 @@ def resolve_oa(
 def _unpaywall_candidates(
     conn, doi: str, ttl_days: int, email: str, prefer_published: bool, fresh: bool
 ):
-    from hyperresearch.core.scholar import _fetch_json
+    from hyperresearch.core.scholar import RateLimitedError, _fetch_json
 
     url = f"{_UNPAYWALL_BASE}/{quote(doi, safe='')}?email={quote(email, safe='')}"
-    data = _fetch_json(conn, url, ttl_days, fresh)
+    try:
+        data = _fetch_json(conn, url, ttl_days, fresh)
+    except RateLimitedError:
+        data = None
     if not data or not data.get("is_oa"):
         return
 
@@ -316,11 +321,14 @@ def _unpaywall_candidates(
 
 
 def _resolve_europepmc(conn, doi: str, ttl_days: int, fresh: bool) -> OALocation | None:
-    from hyperresearch.core.scholar import _fetch_json
+    from hyperresearch.core.scholar import RateLimitedError, _fetch_json
 
     query = quote(f'DOI:"{doi}"', safe="")
     url = f"{_EPMC_BASE}/search?query={query}&format=json&resultType=core&pageSize=1"
-    data = _fetch_json(conn, url, ttl_days, fresh)
+    try:
+        data = _fetch_json(conn, url, ttl_days, fresh)
+    except RateLimitedError:
+        data = None
     if not data:
         return None
 

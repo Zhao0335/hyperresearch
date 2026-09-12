@@ -134,6 +134,11 @@ def sources_score(
             console.print(f"  [red]RETRACTED:[/] {', '.join(result['retracted'])}")
         if result["missing"]:
             console.print(f"  [yellow]No metadata found:[/] {len(result['missing'])} notes")
+        if result.get("rate_limited"):
+            console.print(
+                f"  [red]Rate-limited (not enriched, will retry next run):[/] "
+                f"{len(result['rate_limited'])} notes — set S2_API_KEY or re-run later"
+            )
 
 
 @app.command("backfill-doi")
@@ -189,7 +194,12 @@ def sources_retractions(
     vault.auto_sync()
     result = score_sources(vault, tag=tag, fresh=True)
 
-    data = {"checked": result["scored"], "retracted": result["retracted"], "unresolved": len(result["missing"])}
+    data = {
+        "checked": result["scored"],
+        "retracted": result["retracted"],
+        "unresolved": len(result["missing"]),
+        "rate_limited": len(result.get("rate_limited", [])),
+    }
     if json_output:
         output(success(data, vault=str(vault.root)), json_mode=True)
     else:
@@ -198,6 +208,11 @@ def sources_retractions(
             console.print(f"  [red]RETRACTED:[/] {', '.join(data['retracted'])}")
         else:
             console.print("  no retractions found")
+        if data["rate_limited"]:
+            console.print(
+                f"  [red]Rate-limited:[/] {data['rate_limited']} notes could not be "
+                "re-checked — the sweep is incomplete; re-run later or set S2_API_KEY"
+            )
 
 
 @app.command("independence")

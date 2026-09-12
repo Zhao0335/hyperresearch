@@ -27,11 +27,24 @@ def _vault_or_exit(json_output: bool):
 
 @app.command("ingest")
 def claims_ingest(
-    paths: list[str] = typer.Argument(None, help="claims-*.json files (default: all under research/temp/)"),
-    vault_tag: str | None = typer.Option(None, "--tag", "-t", help="vault_tag to stamp on ingested claims"),
+    paths: list[str] = typer.Argument(
+        None,
+        help=(
+            "claims-*.json files (default: research/runs/<tag>/temp/ when --tag names an "
+            "existing run, else research/temp/ plus every research/runs/*/temp/)"
+        ),
+    ),
+    vault_tag: str | None = typer.Option(
+        None, "--tag", "-t",
+        help="vault_tag to stamp on ingested claims; also narrows the default scan to that run's temp/",
+    ),
     json_output: bool = typer.Option(False, "--json", "-j", help="JSON output"),
 ) -> None:
-    """Ingest claims JSON files into the claims table (idempotent)."""
+    """Ingest claims JSON files into the claims table (idempotent).
+
+    Fetchers write `research/runs/<vault_tag>/temp/claims-<note-id>.json`;
+    the no-argument form finds those (and the legacy flat `research/temp/`).
+    """
     from hyperresearch.core.claims import ingest_claims_dir, ingest_claims_file
 
     vault = _vault_or_exit(json_output)
@@ -55,6 +68,8 @@ def claims_ingest(
             f"[green]Ingested:[/] {summary['ingested']} claims "
             f"({summary['skipped']} already present) from {summary['files']} file(s)"
         )
+        if summary.get("hint"):
+            console.print(f"  [yellow]{summary['hint']}[/]")
         for e in summary["errors"]:
             console.print(f"  [yellow]{e}[/]")
 

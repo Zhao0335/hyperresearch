@@ -106,7 +106,7 @@ Before spawning any fetchers, produce a **search plan** that maps the decomposit
 
 ## Step 2.3 — Utility scoring and selection
 
-**Tier gate:** SKIP for `light`. Run for `full`.
+**Tier gate:** <% if light.utility_scoring %>Run<% else %>SKIP<% endif %> for `light`. <% if p.utility_scoring %>Run<% else %>SKIP<% endif %> for `full`.
 
 Before batching URLs, score each candidate URL on six dimensions (0–3 each, max composite 18):
 
@@ -167,7 +167,7 @@ prompt: |
 
 Append a few lines with `Edit` or `Write` every 30-60 seconds. Productive thinking time AND keeps the turn alive.
 
-**Vault count check** — once every 60 seconds max:
+**Vault count check** — once every << p.vault_check_interval_s >> seconds max:
 ```bash
 PYTHONIOENCODING=utf-8 $HPR note list --tag <vault_tag> --all --json | python -c "import sys,json; d=json.load(sys.stdin); print(f'Notes in vault: {len(d.get(\"data\",[]))}')"
 ```

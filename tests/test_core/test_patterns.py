@@ -143,3 +143,93 @@ def test_real_words_that_look_like_roman_are_accepted():
     # Longer words containing roman chars are fine
     assert is_valid_wiki_link_target("civic")
     assert is_valid_wiki_link_target("minimalism")
+
+
+# --- issue #93: [[Label]](url) is a markdown link, not a wiki-link ---------
+
+
+def _targets(text: str) -> list[str]:
+    from hyperresearch.core.patterns import WIKI_LINK_RE
+
+    return [m.group(1) for m in WIKI_LINK_RE.finditer(text)]
+
+
+def test_bracketed_markdown_link_label_is_not_a_wikilink():
+    # GitHub READMEs / awesome-lists: the *label* is bracketed, the whole
+    # thing is a markdown link. Must not be extracted as a wiki-link.
+    assert _targets("[[Label]](https://example.com)") == []
+    assert _targets("see [[100]](https://en.wikipedia.org/wiki/Foo#cite_note-100)") == []
+    assert _targets("[[Some Repo|alias]](https://github.com/x/y)") == []
+
+
+def test_wikilink_followed_by_spaced_parenthetical_still_matches():
+    # A real wiki-link is never *immediately* followed by "(" — but a
+    # parenthetical after a space is ordinary prose and must keep working.
+    assert _targets("[[note]] (2024)") == ["note"]
+    assert _targets("[[note|Display]] (see also)") == ["note"]
+    # Mixed line: the markdown link is skipped, the real link survives.
+    assert _targets("[[Label]](https://x) and [[real-note]]") == ["real-note"]
+
+
+def test_template_placeholders_rejected():
+    # Unsubstituted skill-prompt placeholders leaking into a note body.
+    assert not is_valid_wiki_link_target("{note_id}")
+    assert not is_valid_wiki_link_target("run-{vault_tag}")
+    assert not is_valid_wiki_link_target("interim-report-{locus-name}")
+    # Braces that are balanced-but-empty are still a placeholder shape.
+    assert not is_valid_wiki_link_target("{}")
+
+
+def test_unbalanced_brackets_rejected():
+    # `[[t.IO[t.Any]]` — a type annotation whose closing "]" was eaten by
+    # the "]]" delimiter; the captured ref has one "[" and no "]".
+    assert not is_valid_wiki_link_target("t.IO[t.Any")
+    assert not is_valid_wiki_link_target("list[str")
+    assert not is_valid_wiki_link_target("foo]")
+    # Balanced brackets inside an id are unusual but not a parse artifact.
+    assert is_valid_wiki_link_target("array[0]-semantics")
+
+
+def test_wikilink_scan_is_linear_on_bracket_floods():
+    # Page bodies are attacker-controlled and this pattern runs on every
+    # sync. With `[` admitted into the character classes every `[[` start
+    # position ate to the end of the run before failing: ~20 s at 40 KB,
+    # unbounded at 1 MB. Each flood below must finish in well under a second.
+    import time
+
+    floods = {
+        "[": "[" * 300_000,
+        "[[": "[[" * 150_000,
+        "[[a": "[[a" * 100_000,
+        "[[a|": "[[a|" * 75_000,
+        "[[a|b": "[[a|b" * 60_000,
+        "]](": "[[a]](" * 50_000,
+    }
+    for name, flood in floods.items():
+        started = time.perf_counter()
+        targets = _targets(flood)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 1.0, f"{name!r} flood took {elapsed:.2f}s"
+        assert targets == [], name
+
+
+def test_template_placeholder_check_is_linear():
+    import time
+
+    # Only the time is under test: an unclosed brace flood is not a
+    # placeholder, so the verdict itself may legitimately be True.
+    for flood in ("{" * 300_000, "{" + "a" * 300_000, "{a" * 150_000, "{a}" * 100_000):
+        started = time.perf_counter()
+        is_valid_wiki_link_target(flood)
+        assert time.perf_counter() - started < 1.0
+
+
+def test_interior_open_bracket_never_matches():
+    # Previously matched as target `t.IO[t.Any` and was rejected downstream
+    # by the bracket-balance check; now the pattern itself refuses it.
+    assert _targets("[[t.IO[t.Any]]") == []
+    assert _targets("[[list[str]]") == []
+    # Extra leading brackets do not become part of the target.
+    assert _targets("[[[x]]") == ["x"]
+    # Ordinary links and aliases are untouched.
+    assert _targets("[[note-id]] and [[other|Shown]]") == ["note-id", "other"]

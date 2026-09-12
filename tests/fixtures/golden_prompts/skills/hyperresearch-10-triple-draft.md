@@ -47,7 +47,7 @@ Read `response_format` and `citation_style` from `research/runs/<vault_tag>/prom
 |--------|-------------|-----------|
 | `"short"` | 500–2000 words / 1500–6000 chars (CJK) | Direct answer, compact |
 | `"structured"` | 2000–5000 words / 6000–15000 chars (CJK) | Scannable, breadth-first |
-| `"argumentative"` | 5000–10000 words / 20000–25000 chars (CJK) | Dense thesis-driven |
+| `"argumentative"` | 5000–10000 words / 15000–30000 chars (CJK) | Dense thesis-driven |
 
 **Length discipline:** Target the MIDDLE of the range. Under-length loses on comprehensiveness; over-length dilutes good content.
 

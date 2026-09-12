@@ -53,14 +53,15 @@ Read these inputs:
 
 3. **Scaffold chapter workspaces.** For each chapter, create `research/runs/<vault_tag>/chapters/<id>/` with an empty `temp/` subdirectory. Chapter-scoped step artifacts (loci.json, comparisons.md, claims, drafts) live there; the flat run-root copies are NOT used on chaptered runs.
 
-4. **Register chapters in the manifest:**
-   ```bash
-   $HPR run step <vault_tag> 1.5 --status done -j
-   ```
-   and for each chapter:
+4. **Register chapters in the manifest.** For each chapter in the plan:
    ```bash
    $HPR run event <vault_tag> --type chapter-plan --data '{"chapter": "<id>", "title": "<title>"}' -j
    ```
+   The `chapter-plan` event is the registration: `run event` folds it into the manifest's `chapters` table (status `planned`), which is what `run status` / `run resume` read as `chapters_pending`. A chapter stays pending until its step 10 is recorded done with `--chapter <id>`. Then close the step:
+   ```bash
+   $HPR run step <vault_tag> 1.5 --status done -j
+   ```
+   Verify before moving on: `$HPR run resume <vault_tag> -j` must list every chapter id under `chapters_pending`. An empty list here means the chapters were never registered and a resumed run would think there is nothing left to do.
 
 5. **Chapter tagging convention.** Every note fetched or written for a chapter carries BOTH tags: `<vault_tag>` and `<vault_tag>-<id>` (e.g. `china-rail-x9f2a1-ch3`). Whole-run queries use the first; per-chapter queries use the second. Cross-chapter source reuse is free — dedup is by URL, and a chapter's coverage check searches the whole `<vault_tag>` corpus before fetching.
 

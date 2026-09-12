@@ -191,7 +191,7 @@ def graph_stub(
     json_output: bool = typer.Option(False, "--json", "-j", help="JSON output"),
 ) -> None:
     """Create stub notes for all broken [[links]]."""
-    from hyperresearch.core.note import write_note
+    from hyperresearch.core.note import stub_summary, write_note
     from hyperresearch.core.vault import Vault
 
     vault = Vault.discover()
@@ -231,7 +231,7 @@ def graph_stub(
             body=f"# {title}\n\n*Stub — created to resolve a broken link. Expand this note.*\n",
             note_id=target,
             status="draft",
-            summary=f"Stub for [[{target}]]",
+            summary=stub_summary(target),
         )
         created.append({"id": target, "title": title, "path": path.relative_to(vault.root).as_posix()})
 

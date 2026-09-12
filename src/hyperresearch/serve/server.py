@@ -5,6 +5,7 @@ from __future__ import annotations
 import html as html_mod
 import json
 import sqlite3
+import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -583,16 +584,39 @@ class HyperresearchHandler(BaseHTTPRequestHandler):
         pass
 
 
-def run_server(vault, port: int = 8080, open_browser: bool = False):
+class HyperresearchServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer whose listening port is exclusively ours on every platform.
+
+    HTTPServer sets ``allow_reuse_address`` (SO_REUSEADDR) so a restarted
+    server can reclaim a port whose previous owner is still in TIME_WAIT.
+    That is all the option does on POSIX. Winsock gives SO_REUSEADDR a
+    different meaning: the bind is allowed to succeed on a port another
+    socket is actively listening on, so the port is shared rather than
+    reclaimed, and neither listener is guaranteed the connections. With
+    ``port=0`` that also means the OS-picked port is not exclusively ours.
+    Windows does not need the option for the POSIX use case, since a plain
+    bind there already succeeds over TIME_WAIT entries, so leave it off.
+    This mirrors CPython's own ``test.support.bind_port`` choice.
+    """
+
+    allow_reuse_address = sys.platform != "win32"
+
+
+def run_server(vault, port: int = 8080, open_browser: bool = False) -> int:
+    """Serve ``vault`` on 127.0.0.1 until SIGINT and return the port actually bound.
+
+    ``port=0`` asks the OS for a free port; the printed URL and the return
+    value carry that port, not the argument.
+    """
     import signal
-    import sys
 
     HyperresearchHandler.vault = vault
-    server = ThreadingHTTPServer(("127.0.0.1", port), HyperresearchHandler)
+    server = HyperresearchServer(("127.0.0.1", port), HyperresearchHandler)
     server.timeout = 0.5  # Check for Ctrl+C every 500ms
+    port = server.server_address[1]
     url = f"http://127.0.0.1:{port}"
-    print(f"Serving at {url}")
-    print("Press Ctrl+C to stop.\n")
+    print(f"Serving at {url}", flush=True)
+    print("Press Ctrl+C to stop.\n", flush=True)
 
     if open_browser:
         import webbrowser
@@ -613,4 +637,4 @@ def run_server(vault, port: int = 8080, open_browser: bool = False):
         server.server_close()
 
     print("\nStopped.")
-    sys.exit(0)
+    return port

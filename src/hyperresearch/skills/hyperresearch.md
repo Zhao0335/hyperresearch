@@ -40,16 +40,16 @@ When you invoke a Skill, that skill's full procedure is loaded into your context
 | # | Skill name | What it does | Tiers |
 |---|---|---|---|
 | 1 | `hyperresearch-1-decompose` | Canonical query → scaffold + decomposition + coverage matrix + tier classification | all |
-| 1.5 | `hyperresearch-1-5-chapter-partition` | Partition atomic items into 4–10 chapters; steps 2–10 then loop per chapter | dissertation |
+| 1.5 | `hyperresearch-1-5-chapter-partition` | Partition atomic items into << dissertation.chapters|dash >> chapters; steps 2–10 then loop per chapter | dissertation |
 | 2 | `hyperresearch-2-width-sweep` | Multi-perspective search plan + parallel fetcher waves | all |
 | 3 | `hyperresearch-3-contradiction-graph` | Pair contradictions across the corpus into ranked fight clusters | full |
-| 4 | `hyperresearch-4-loci-analysis` | 2 loci-analysts → scored loci.json with source budgets | full |
+| 4 | `hyperresearch-4-loci-analysis` | << p.loci_analysts >> loci-analysts → scored loci.json with source budgets | full |
 | 5 | `hyperresearch-5-depth-investigation` | K depth-investigators in parallel → interim notes with committed positions | full |
 | 6 | `hyperresearch-6-cross-locus-reconcile` | Reconcile committed positions → comparisons.md | full |
 | 7 | `hyperresearch-7-source-tensions` | Extract expert disagreements → source-tensions.json | full |
 | 8 | `hyperresearch-8-corpus-critic` | "What source would overturn this?" + targeted gap-fill fetch | full |
 | 9 | `hyperresearch-9-evidence-digest` | Top claims + verbatim quotes → evidence-digest.md | full |
-| 10 | `hyperresearch-10-triple-draft` | Per-angle source curation + 3 parallel draft-orchestrators (3 angle-specific drafts) | all |
+| 10 | `hyperresearch-10-triple-draft` | Per-angle source curation + << p.draft_count >> parallel draft-orchestrators (<< p.draft_count >> angle-specific drafts) | all |
 | 11 | `hyperresearch-11-synthesize` | Synthesis plan + outline + spawn synthesizer subagent (two-pass write) → final_report.md | full |
 | 12 | `hyperresearch-12-critics` | 4 adversarial critics in parallel → findings JSONs | full |
 | 13 | `hyperresearch-13-gap-fetch` | Fetch sources for critic-identified vault gaps | full |

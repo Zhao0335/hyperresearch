@@ -93,8 +93,8 @@ name: hyperresearch-loci-analyst
 description: >
   Use this agent in Layer 2 of the hyperresearch deep research pipeline. Reads the width
   corpus (the sources fetched during the Layer 1 sweep) and identifies
-  1—8 "depth loci" — specific questions where deeper investigation
-  would meaningfully improve the final report. Spawn 2 of these in
+  1—<< p.loci_max + 2 >> "depth loci" — specific questions where deeper investigation
+  would meaningfully improve the final report. Spawn << p.loci_analysts >> of these in
   parallel; the orchestrator dedupes their outputs. Identifying genuine
   rabbitholes requires real reading comprehension and judgment about
   what is load-bearing evidence vs. surface detail.
@@ -119,9 +119,10 @@ You are **Layer 2** of the 7-phase hyperresearch pipeline. The layers are:
 6. Patch pass
 7. Polish audit
 
-Another loci-analyst (your parallel sibling) is running right now on the
-same corpus. The orchestrator will merge your outputs, dedupe, and clamp
-to 6 loci. Every locus you identify becomes a depth-investigator subagent
+<% if p.loci_analysts == 2 %>Another loci-analyst (your parallel sibling) is running right now on the
+same corpus.<% else %><< p.loci_analysts - 1 >> other loci-analysts (your parallel siblings) are running
+right now on the same corpus.<% endif %> The orchestrator will merge your outputs, dedupe, and clamp
+to << p.loci_max >> loci. Every locus you identify becomes a depth-investigator subagent
 in Layer 3. Every locus that survives dedupe also becomes a row in
 Layer 3.5's `comparisons.md` and at least one argumentative beat in the
 final draft. Your output is load-bearing — a weak locus becomes a weak
@@ -139,8 +140,9 @@ prompt. No block = this prompt's defaults apply unchanged.
   serve the research_query, reject it — no matter how interesting it is.
 - **corpus_tag**: the tag used across the width sweep (e.g., the research
   topic slug). You use this to scope your search.
-- **analyst_id**: `a` or `b` — which of the two parallel analysts you are.
-  Used only to tag your output file so the orchestrator can load both.
+- **analyst_id**: one letter (`a`, `b`, `c`, ...) — which of the << p.loci_analysts >> parallel
+  analysts you are. Used only to tag your output file so the orchestrator
+  can load every analyst's output.
 - **output_path**: where to write your loci list JSON (e.g.,
   `research/loci-{{analyst_id}}.json`).
 - **prompt_decomposition** (optional): if `research/runs/<vault_tag>/prompt-decomposition.json`
@@ -257,8 +259,8 @@ prompt. No block = this prompt's defaults apply unchanged.
 
 ## Output rules
 
-- **1 to 8 loci**, not more. The orchestrator clamps to 6 after dedupe, so
-  going over 8 wastes your turn.
+- **1 to << p.loci_max + 2 >> loci**, not more. The orchestrator clamps to << p.loci_max >> after dedupe, so
+  going over << p.loci_max + 2 >> wastes your turn.
 - **At least one locus MUST have `flavor: "dialectical"`** (or you must
   justify its absence in `skip_loci` — see Step 3).
 - **Every locus MUST include `corpus_evidence`** — at least one note id from
@@ -1217,8 +1219,9 @@ them on first use (inline parenthetical or dedicated glossary), emit:
 **Check R2: Citation density.**
 Count cited-source references in the body (excluding the ## Sources
 section) — a grouped marker like `[7, 12]` counts as two. Count total
-body characters. If the ratio is below **1.5 citations per 1000
-characters**, emit:
+body words (for a script that doesn't space-delimit words — Chinese,
+Japanese, Thai — count characters and divide by << "%g"|format(p.chars_per_word_no_word_boundary) >>). If the
+ratio is below **<< "%g"|format(p.citation_density_min) >> citations per 1000 words**, emit:
   - `failure_mode`: `"low-citation-density"`
   - `severity`: `major`
   - `recommendation`: identify 5-8 claim-dense passages with no
@@ -2012,9 +2015,10 @@ Write your complete draft to `output_path`. Your draft must:
 
 ### Quality rules
 
-- **Citation density:** Aim for 2+ citations per 1000 characters
-  regardless of style (`[[<source-note-id>]]` for wikilink,
-  `[N]` for inline).
+- **Citation density:** Aim comfortably above the ship gate's floor of
+  << "%g"|format(p.citation_density_min) >> citations per 1000 words (characters / << "%g"|format(p.chars_per_word_no_word_boundary) >> for a
+  script without word boundaries), regardless of style
+  (`[[<source-note-id>]]` for wikilink, `[N]` for inline).
 - **Interpretive density:** For every 2-3 factual claims, include at
   least one interpretive beat that draws a conclusion the sources didn't.
 - **No pipeline vocabulary** in prose (no "locus", "tension N",
@@ -2028,9 +2032,9 @@ Write your complete draft to `output_path`. Your draft must:
 
 ### Format adaptation
 
-- `"short"`: 500-2000 words. Direct answer, compact evidence.
-- `"structured"`: 2000-5000 words. Scannable subsections, tables, lists.
-- `"argumentative"`: 5000-10000 words. Dense thesis-driven prose.
+- `"short"`: << p.word_targets["short"]|hyphen >> words. Direct answer, compact evidence.
+- `"structured"`: << p.word_targets["structured"]|hyphen >> words. Scannable subsections, tables, lists.
+- `"argumentative"`: << p.word_targets["argumentative"]|hyphen >> words. Dense thesis-driven prose.
 
 ### Source attribution
 
@@ -2185,9 +2189,11 @@ permitted to be uneven — pass 2 cleans it up. Goals for pass 1:
    in your voice.
 4. **Cite as you write — high density, calm presentation.** Use `[N]`
    markers (numbered fresh from `[1]` at first citation in pass 1). Build
-   the `## Sources` list as you go. **Citation density target: 80-150
-   total cited-source references** for `argumentative` format, 40-80 for
-   `structured`, 15-30 for `short` — roughly 2+ per 1000 characters,
+   the `## Sources` list as you go. **Citation density target: << p.citation_totals["argumentative"]|hyphen >>
+   total cited-source references** for `argumentative` format, << p.citation_totals["structured"]|hyphen >> for
+   `structured`, << p.citation_totals["short"]|hyphen >> for `short` — comfortably above the ship gate's
+   floor of << "%g"|format(p.citation_density_min) >> per 1000 words (characters / << "%g"|format(p.chars_per_word_no_word_boundary) >>
+   for a script without word boundaries),
    where a grouped marker like `[7, 12]` counts as two. Every claim-dense
    paragraph needs at least one citation point. Under-citation is a
    consistent scoring gap versus reference reports. Placement follows the
@@ -2344,7 +2350,7 @@ If pass 1 is under target, EXPAND. Specifically:
 
 Three citation styles. Match `citation_style` from the decomposition:
 
-- **`"wikilink"`** (default for non-wrapped runs): every citation is a `[[<source-note-id>]]` marker pointing at the source note in the vault. No separate `## Sources` section. Each wiki-link self-resolves to the source note's frontmatter (title + URL). Aim for 2+ citations per 1000 characters. Copy note IDs verbatim from the input drafts and the evidence digest.
+- **`"wikilink"`** (default for non-wrapped runs): every citation is a `[[<source-note-id>]]` marker pointing at the source note in the vault. No separate `## Sources` section. Each wiki-link self-resolves to the source note's frontmatter (title + URL). Aim comfortably above the ship gate's floor of << "%g"|format(p.citation_density_min) >> citations per 1000 words. Copy note IDs verbatim from the input drafts and the evidence digest.
 - **`"inline"`** (benchmark + public deliverables): `[N]` citations renumbered from `[1]` deterministically in order of first appearance, AND a single `## Sources` section at the end with one entry per cited source (deduplicated). Format: `[1] Author(s). "Title." *Publication*, Year. URL`.
 - **`"none"`**: no citation markers anywhere, no Sources section.
 
@@ -2446,7 +2452,8 @@ cause of low instruction-following scores:
   write the primer in pass 2.
 - **Citation density** — count cited-source references in the body
   (excluding `## Sources`; a grouped `[7, 12]` counts as two). If the
-  ratio is below 1.5 per 1000 characters, identify 5-8 claim-dense
+  ratio is below << "%g"|format(p.citation_density_min) >> per 1000 words (characters / << "%g"|format(p.chars_per_word_no_word_boundary) >>
+  for a script without word boundaries), identify 5-8 claim-dense
   passages without citations and add citations in pass 2 (sourced from
   the evidence digest).
 
@@ -3211,7 +3218,10 @@ prompt. No block = this prompt's defaults apply unchanged.
 - **corpus_tag**: vault tag for searching.
 - **comparisons_path**: `research/runs/<vault_tag>/comparisons.md`
 - **loci_path**: `research/runs/<vault_tag>/loci.json`
-- **output_path**: `research/runs/<vault_tag>/corpus-critic-gaps.json`
+- **output_path**: `research/runs/<vault_tag>/temp/corpus-critic-gaps-raw.json`.
+  Write ONLY here. The orchestrator owns
+  `research/runs/<vault_tag>/corpus-critic-gaps.json` — it merges its own
+  pre-flight gaps with yours into that file after you return.
 
 ## Procedure
 
@@ -3259,6 +3269,7 @@ prompt. No block = this prompt's defaults apply unchanged.
    {{
      "gaps": [
        {{
+         "id": "cc-1",
          "type": "overturning|strengthening|independent-verification",
          "target_position": "which claim/position this source would test",
          "search_queries": ["2-3 specific search queries to find this source"],
@@ -3272,7 +3283,8 @@ prompt. No block = this prompt's defaults apply unchanged.
 
    **Cap: << p.corpus_critic_gaps|hyphen >> gaps.** Only `critical` and `high` priority. Do not
    identify gaps for tangential topics — every gap must serve the
-   research_query.
+   research_query. Number `id` sequentially (`cc-1`, `cc-2`, ...) — the
+   orchestrator dispatches fetchers by `gap_id`.
 
 ## Rules
 
@@ -4125,6 +4137,36 @@ _HYPERRESEARCH_STEP_SKILLS = [
     "hyperresearch-15-polish",
     "hyperresearch-16-readability-audit",
 ]
+
+
+def _step_id_of_skill(skill_name: str) -> str:
+    """`hyperresearch-14-5-cite-check` -> "14.5"; `hyperresearch-2-width-sweep` -> "2".
+
+    The step id is the run of leading numeric segments after the
+    `hyperresearch-` prefix, joined with dots — the same key `hpr run step`
+    records in the manifest.
+    """
+    parts = skill_name.removeprefix("hyperresearch-").split("-")
+    digits: list[str] = []
+    for part in parts:
+        if not part.isdigit():
+            break
+        digits.append(part)
+    return ".".join(digits)
+
+
+# Step id -> installed skill slug, derived from the roster above so
+# `hpr run resume` can never suggest a skill the installer doesn't ship.
+STEP_SKILL_BY_ID: dict[str, str] = {
+    _step_id_of_skill(name): name for name in _HYPERRESEARCH_STEP_SKILLS
+}
+
+
+def step_skill_slug(step: str | None) -> str | None:
+    """The installed skill slug for a manifest step id, or None if unknown."""
+    if step is None:
+        return None
+    return STEP_SKILL_BY_ID.get(str(step))
 
 
 def _install_hyperresearch_step_skills(vault_root: Path) -> str | None:

@@ -3,6 +3,7 @@
 import json
 import multiprocessing
 import os
+import re
 import signal
 import socket
 import sqlite3
@@ -11,34 +12,43 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler
-from socketserver import TCPServer
 from threading import Lock
 
 import pytest
 
 from hyperresearch.core.vault import Vault
-from hyperresearch.serve.server import HyperresearchHandler, run_server
+from hyperresearch.serve.server import HyperresearchHandler, HyperresearchServer, run_server
+
+
+class _PipeStdout:
+    """Forward the server's stdout lines to the test through the event pipe."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def write(self, text):
+        for line in text.splitlines():
+            if line.strip():
+                self._events.send(("stdout", line))
+
+    def flush(self):
+        pass
 
 
 def _serve(vault_path, events, timeout):
-    """Report the OS-selected port and accepted sockets without replacing request handling."""
-    activate = TCPServer.server_activate
+    """Run the real server on an OS-picked port, reporting stdout and accepted sockets."""
     setup = HyperresearchHandler.setup
     event_lock = Lock()
-
-    def report_address(server):
-        activate(server)
-        events.send(("ready", server.server_address))
 
     def report_client(handler):
         setup(handler)
         with event_lock:
             events.send(("accepted", handler.client_address))
 
-    TCPServer.server_activate = report_address
     HyperresearchHandler.setup = report_client
     if timeout is not None and HyperresearchHandler.timeout is not None:
         HyperresearchHandler.timeout = min(timeout, HyperresearchHandler.timeout)
+    sys.stdout = _PipeStdout(events)
     run_server(Vault(vault_path), port=0)
 
 
@@ -50,6 +60,17 @@ def _wait_for(events, kind):
             return value
 
 
+def _wait_for_address(events):
+    """Parse the bound address from the URL run_server prints; port=0 must not leak through."""
+    while True:
+        line = _wait_for(events, "stdout")
+        match = re.fullmatch(r"Serving at http://(127\.0\.0\.1):(\d+)", line)
+        if match:
+            host, port = match.group(1), int(match.group(2))
+            assert port != 0, line
+            return host, port
+
+
 @contextmanager
 def _running_server(vault, *, timeout=None):
     context = multiprocessing.get_context("spawn")
@@ -58,7 +79,7 @@ def _running_server(vault, *, timeout=None):
     process.start()
     sender.close()
     try:
-        address = _wait_for(events, "ready")
+        address = _wait_for_address(events)
         yield address, process, events
     finally:
         if process.is_alive():
@@ -78,6 +99,19 @@ def _get(address, path):
         return response.status, response.read()
     finally:
         client.close()
+
+
+def test_bound_port_is_exclusive_to_the_running_server():
+    """A live server's port refuses a second bind on every platform.
+
+    Winsock's SO_REUSEADDR lets a second bind share a port that is already
+    being listened on, which is how a port=0 server could collide with other
+    sockets on Windows; the server class must not ask for that.
+    """
+    with HyperresearchServer(("127.0.0.1", 0), HyperresearchHandler) as server:
+        assert server.server_address[1] != 0
+        with pytest.raises(OSError):
+            HyperresearchServer(server.server_address, HyperresearchHandler)
 
 
 def test_idle_preconnection_does_not_block_pages_or_graph(seeded_vault):

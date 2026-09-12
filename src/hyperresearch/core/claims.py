@@ -1,10 +1,12 @@
 """Claims persistence — fetcher-extracted claims as queryable DB rows.
 
-Fetchers write `research/temp/claims-<note-id>.json` files during step 2.
-This module ingests them into the `claims` (+ `claims_fts`) tables, keyed to
-their source notes, so downstream consumers can ask "which source best
-supports X" as a query instead of re-parsing JSON files. This is the
-substrate for phase-5 cite-checking and numeric-consistency lints.
+Fetchers write `research/runs/<vault_tag>/temp/claims-<note-id>.json` files
+during step 2 (and step 13's gap fetch); the legacy flat location
+`research/temp/claims-*.json` is still honoured. This module ingests them
+into the `claims` (+ `claims_fts`) tables, keyed to their source notes, so
+downstream consumers can ask "which source best supports X" as a query
+instead of re-parsing JSON files. This is the substrate for phase-5
+cite-checking and numeric-consistency lints.
 
 Ingest is idempotent: rows are keyed by (note_id, sha256(claim)[:16]), so
 re-running over the same files is a no-op.
@@ -14,12 +16,52 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+
+# Claims files are written by agents from fetched (hostile) page content.
+# Bound what one file can cost: a size cap before it is read into memory,
+# and a per-field cap so one claim cannot bloat a row or the FTS index.
+MAX_CLAIMS_FILE_BYTES = 8 * 1024 * 1024
+MAX_CLAIM_FIELD_CHARS = 20_000
 
 
 def _claim_hash(claim: str) -> str:
     return hashlib.sha256(claim.strip().encode("utf-8")).hexdigest()[:16]
+
+
+def _text_field(value) -> str:
+    """Coerce an untrusted claim field to bounded text ('' when absent).
+
+    A claim JSON is agent-written from hostile page content, so a field
+    can be any JSON type; sqlite3 refuses to bind lists/dicts and `.strip()`
+    on a non-string would abort the whole ingest. Only strings count as
+    text — a number, list or dict where prose belongs is dropped.
+    """
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:MAX_CLAIM_FIELD_CHARS]
+
+
+def _scalar_field(value):
+    """Numbers and short strings pass; anything else becomes None."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:MAX_CLAIM_FIELD_CHARS]
+    return None
+
+
+def _under(path: Path, root: Path) -> bool:
+    """True if `path` resolves to `root` or somewhere below it."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        return False
+    return True
 
 
 def _note_id_from_filename(path: Path) -> str | None:
@@ -55,57 +97,143 @@ def ingest_claims_file(conn, path: Path, vault_tag: str | None = None) -> dict:
         return result
 
     try:
+        size = path.stat().st_size
+    except OSError as e:
+        result["errors"].append(f"unreadable JSON: {e}")
+        return result
+    if size > MAX_CLAIMS_FILE_BYTES:
+        result["errors"].append(
+            f"claims file is {size} bytes (limit {MAX_CLAIMS_FILE_BYTES}); skipped"
+        )
+        return result
+    try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError, RecursionError) as e:
         result["errors"].append(f"unreadable JSON: {e}")
         return result
 
     now = datetime.now(UTC).isoformat()
     for c in _iter_claim_dicts(data):
-        claim_text = (c.get("claim") or c.get("text") or "").strip()
+        claim_text = _text_field(c.get("claim")) or _text_field(c.get("text"))
         if not claim_text:
             result["skipped"] += 1
             continue
         h = _claim_hash(claim_text)
         numbers = c.get("numbers")
-        cur = conn.execute(
-            """INSERT OR IGNORE INTO claims
-               (note_id, claim, claim_hash, quoted_support, numbers, confidence,
-                evidence_type, stance_target, stance, vault_tag, ingested_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                note_id,
-                claim_text,
-                h,
-                c.get("quoted_support"),
-                json.dumps(numbers) if numbers else None,
-                c.get("confidence"),
-                c.get("evidence_type"),
-                c.get("stance_target"),
-                c.get("stance"),
-                vault_tag,
-                now,
-            ),
-        )
-        if cur.rowcount:
-            claim_id = cur.lastrowid
-            conn.execute(
-                "INSERT INTO claims_fts (claim_id, claim, quoted_support) VALUES (?, ?, ?)",
-                (claim_id, claim_text, c.get("quoted_support") or ""),
+        try:
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO claims
+                   (note_id, claim, claim_hash, quoted_support, numbers, confidence,
+                    evidence_type, stance_target, stance, vault_tag, ingested_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    note_id,
+                    claim_text,
+                    h,
+                    _text_field(c.get("quoted_support")) or None,
+                    json.dumps(numbers)[:MAX_CLAIM_FIELD_CHARS] if numbers else None,
+                    _scalar_field(c.get("confidence")),
+                    _text_field(c.get("evidence_type")) or None,
+                    _text_field(c.get("stance_target")) or None,
+                    _text_field(c.get("stance")) or None,
+                    vault_tag,
+                    now,
+                ),
             )
-            result["ingested"] += 1
-        else:
+            if cur.rowcount:
+                claim_id = cur.lastrowid
+                conn.execute(
+                    "INSERT INTO claims_fts (claim_id, claim, quoted_support) VALUES (?, ?, ?)",
+                    (claim_id, claim_text, _text_field(c.get("quoted_support"))),
+                )
+                result["ingested"] += 1
+            else:
+                result["skipped"] += 1
+        except sqlite3.Error as e:
+            # One malformed claim (agent-written from fetched, hostile page
+            # content) must not abort the whole ingest.
+            result["errors"].append(f"claim {h} not stored: {e}")
             result["skipped"] += 1
     return result
 
 
+def _glob_claims(directory: Path) -> list[Path]:
+    return sorted(directory.glob("claims-*.json")) if directory.is_dir() else []
+
+
+def default_claims_dirs(vault, vault_tag: str | None = None) -> list[Path]:
+    """Directories a default (no explicit `temp_dir`) ingest scans.
+
+    With a `vault_tag` whose run workspace exists, exactly that run's
+    `research/runs/<vault_tag>/temp/`. Otherwise the union of the legacy
+    flat `research/temp/` and every `research/runs/*/temp/` — the fetcher
+    contract writes claims into the run workspace, so a scan limited to
+    the flat directory sees nothing in a real run.
+    """
+    research = vault.root / "research"
+    runs = research / "runs"
+    if vault_tag:
+        # `vault_tag` is a CLI argument (an agent may have been talked into
+        # it): a tag like `../../..` or an absolute path must not point the
+        # scan outside research/runs/. Only a tag that resolves under the
+        # runs directory narrows the scan; anything else falls through to
+        # the default union.
+        run_temp = runs / vault_tag / "temp"
+        if _under(run_temp, runs) and run_temp.is_dir():
+            return [run_temp]
+    dirs = [research / "temp"]
+    if runs.is_dir():
+        dirs.extend(sorted(d / "temp" for d in runs.iterdir() if d.is_dir()))
+    return dirs
+
+
+def discover_claims_files(vault, vault_tag: str | None = None) -> list[Path]:
+    """Every claims-*.json a default ingest would read, deduplicated by
+    resolved path and sorted. Files that resolve outside the vault (a
+    symlink planted in a run workspace) are skipped."""
+    seen: set[Path] = set()
+    files: list[Path] = []
+    for d in default_claims_dirs(vault, vault_tag):
+        for f in _glob_claims(d):
+            if not _under(f, vault.root):
+                continue
+            key = f.resolve()
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(f)
+    return sorted(files)
+
+
 def ingest_claims_dir(vault, temp_dir: Path | None = None, vault_tag: str | None = None) -> dict:
-    """Ingest every claims-*.json under research/temp/. Returns a summary."""
+    """Ingest claims-*.json files. Returns a summary.
+
+    `temp_dir` given: scan exactly that directory (no recursion). Otherwise
+    scan `default_claims_dirs(vault, vault_tag)` — the run workspace for
+    `vault_tag` when it exists, else legacy `research/temp/` plus every
+    `research/runs/*/temp/`. `vault_tag` is also stamped on every row.
+    """
     conn = vault.db
     if temp_dir is None:
-        temp_dir = vault.root / "research" / "temp"
-    files = sorted(temp_dir.glob("claims-*.json")) if temp_dir.is_dir() else []
-    summary = {"files": len(files), "ingested": 0, "skipped": 0, "errors": []}
+        scanned = default_claims_dirs(vault, vault_tag)
+        files = discover_claims_files(vault, vault_tag)
+    else:
+        scanned = [temp_dir]
+        files = _glob_claims(temp_dir)
+    summary = {
+        "files": len(files),
+        "ingested": 0,
+        "skipped": 0,
+        "errors": [],
+        "scanned": [str(d) for d in scanned],
+    }
+    if not files:
+        summary["hint"] = (
+            "no claims-*.json found under "
+            + ", ".join(summary["scanned"])
+            + "; fetchers write research/runs/<vault_tag>/temp/claims-<note-id>.json "
+            "-- pass --tag <vault_tag> or the files explicitly"
+        )
     for f in files:
         r = ingest_claims_file(conn, f, vault_tag)
         summary["ingested"] += r["ingested"]

@@ -16,6 +16,21 @@ from hyperresearch.core.patterns import (
 )
 from hyperresearch.models.note import Note, NoteMeta, slugify
 
+# Summary prefix that marks a resolver-minted stub (`repair --stub`,
+# `graph stub`). Both minting sites write `summary="Stub for [[<id>]]"` and
+# sideline the file under research/temp/. The summary is the marker the
+# rankers key on: it survives `repair`'s enrich pass (which only fills EMPTY
+# summaries), needs no vault context to test from a bare DB connection, and
+# self-clears the moment a human rewrites the summary — i.e. when the stub
+# stops being a stub. `notes.type` cannot carry it without a schema
+# migration (CHECK constraint). See issue #93.
+STUB_SUMMARY_PREFIX = "Stub for [["
+
+
+def stub_summary(note_id: str) -> str:
+    """The summary a resolver-minted stub carries (see STUB_SUMMARY_PREFIX)."""
+    return f"{STUB_SUMMARY_PREFIX}{note_id}]]"
+
 
 def read_note(file_path: Path, vault_root: Path) -> Note:
     """Read a markdown file and parse into a Note."""

@@ -241,12 +241,21 @@ class IndexGenerator:
         return self._write_index("_stale.md", "Stale Notes", "\n".join(lines))
 
     def _build_most_linked(self) -> str:
-        """Top 30 notes by inbound link count."""
+        """Top 30 notes by inbound link count.
+
+        Resolver-minted stubs are excluded: a stub exists ONLY because
+        something linked to it, so counting inbound links would rank every
+        parse artifact (`[[100]]`, `t.IO[t.Any`) above real notes (#93).
+        """
+        from hyperresearch.core.note import STUB_SUMMARY_PREFIX
+
         rows = self.vault.db.execute(
             "SELECT l.target_id as id, n.title, COUNT(*) as inbound "
             "FROM links l JOIN notes n ON l.target_id = n.id "
             "WHERE l.target_id IS NOT NULL "
-            "GROUP BY l.target_id ORDER BY inbound DESC LIMIT 30"
+            "AND COALESCE(n.summary, '') NOT LIKE ? "
+            "GROUP BY l.target_id ORDER BY inbound DESC LIMIT 30",
+            (STUB_SUMMARY_PREFIX + "%",),
         ).fetchall()
 
         lines = ["# Most Linked Notes\n", f"Top {len(rows)} notes by inbound link count.\n"]

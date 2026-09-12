@@ -49,8 +49,9 @@ prompt. No block = this prompt's defaults apply unchanged.
   serve the research_query, reject it — no matter how interesting it is.
 - **corpus_tag**: the tag used across the width sweep (e.g., the research
   topic slug). You use this to scope your search.
-- **analyst_id**: `a` or `b` — which of the two parallel analysts you are.
-  Used only to tag your output file so the orchestrator can load both.
+- **analyst_id**: one letter (`a`, `b`, `c`, ...) — which of the 2 parallel
+  analysts you are. Used only to tag your output file so the orchestrator
+  can load every analyst's output.
 - **output_path**: where to write your loci list JSON (e.g.,
   `research/loci-{{analyst_id}}.json`).
 - **prompt_decomposition** (optional): if `research/runs/<vault_tag>/prompt-decomposition.json`

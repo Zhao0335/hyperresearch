@@ -16,16 +16,26 @@ All HTTP goes through `_fetch_json`, which consults the `api_cache` table
 (TTL from `[ranking] api_cache_ttl_days`) before touching the network —
 re-scoring a vault is cheap and offline-friendly. Tests monkeypatch
 `_http_get_json`; no test ever hits the network.
+
+Failure semantics: every non-200 is a soft None ("nothing found") EXCEPT a
+429 that survives the retry budget, which raises `RateLimitedError` so the
+caller can tell "the API refused to answer" from "the paper does not exist".
+Only success bodies are cached, so a rate-limited lookup is retried on the
+next run. Semantic Scholar accepts an optional API key via `S2_API_KEY` /
+`SEMANTIC_SCHOLAR_API_KEY`; it is attached ONLY to semanticscholar.org
+requests — `_fetch_json` is shared with Unpaywall and Europe PMC
+(core/oa.py) and must never leak the key to another host.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 from datetime import UTC, datetime, timedelta
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 DOI_RE = re.compile(r"\b(10\.\d{4,9}/[^\s\"'<>\])}]+)", re.IGNORECASE)
 ARXIV_URL_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5}(?:v\d+)?)", re.IGNORECASE)
@@ -87,30 +97,151 @@ def extract_doi(
 # ---------------------------------------------------------------------------
 
 
+class RateLimitedError(RuntimeError):
+    """The API answered 429 on every attempt of the retry budget.
+
+    Distinct from a soft None so callers never report a rate limit as "no
+    metadata found". Carries the host so batch callers can say which API
+    throttled them.
+    """
+
+    def __init__(self, host: str, attempts: int):
+        self.host = host
+        self.attempts = attempts
+        super().__init__(f"{host} rate-limited after {attempts} attempts")
+
+
+# 429 retry budget: total attempts and the fixed backoff between them when
+# the response carries no usable Retry-After.
+_RATE_LIMIT_ATTEMPTS = 3
+_RATE_LIMIT_BACKOFF = (2.0, 4.0)
+_RETRY_AFTER_MAX = 60.0
+
+_S2_KEY_ENV = ("S2_API_KEY", "SEMANTIC_SCHOLAR_API_KEY")
+_S2_KEY_HOST = "semanticscholar.org"
+
+# Redirects are followed by hand (not httpx's follow_redirects) so the
+# per-hop headers are recomputed from the hop's URL: httpx strips only
+# `Authorization` on a cross-origin redirect and would carry `x-api-key`
+# to whatever host semanticscholar.org pointed at.
+_MAX_REDIRECTS = 5
+
+
+def _s2_api_key() -> str | None:
+    for name in _S2_KEY_ENV:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return None
+
+
+def _is_s2_host(url: str) -> bool:
+    """True only for semanticscholar.org itself or a subdomain of it.
+
+    Uses the parsed hostname (userinfo and port stripped) and a proper
+    suffix match, so `evilsemanticscholar.org`, `semanticscholar.org.evil`,
+    `evil@semanticscholar.org`-shaped userinfo tricks and a path that
+    merely contains the string all fail.
+    """
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    host = host.lower().rstrip(".")
+    return host == _S2_KEY_HOST or host.endswith("." + _S2_KEY_HOST)
+
+
+def _request_headers(url: str) -> dict[str, str]:
+    """Headers for one request. The Semantic Scholar key is scoped to its
+    host and nowhere else — this function is the only place it is read."""
+    headers = {"User-Agent": "hyperresearch (mailto:research@example.com)"}
+    if _is_s2_host(url):
+        key = _s2_api_key()
+        if key:
+            headers["x-api-key"] = key
+    return headers
+
+
+def _redirect_target(resp, url: str) -> str | None:
+    """The absolute URL a 3xx response points at, or None if it is not a
+    followable redirect (no Location, or a non-http(s) scheme)."""
+    if not (300 <= resp.status_code < 400):
+        return None
+    headers = getattr(resp, "headers", None) or {}
+    location = headers.get("Location") or headers.get("location")
+    if not location:
+        return None
+    target = urljoin(url, str(location))
+    if urlparse(target).scheme not in ("http", "https"):
+        return None
+    return target
+
+
+def _retry_after_seconds(resp, attempt: int) -> float:
+    """Backoff before the next attempt: an honoured Retry-After if it is a
+    sane number of seconds, else the fixed 2s / 4s ladder."""
+    raw = resp.headers.get("Retry-After") if getattr(resp, "headers", None) else None
+    if raw:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = -1.0
+        if 0 <= value <= _RETRY_AFTER_MAX:
+            return value
+    return _RATE_LIMIT_BACKOFF[min(attempt, len(_RATE_LIMIT_BACKOFF) - 1)]
+
+
 def _http_get_json(url: str) -> dict | None:
     """Raw HTTP GET returning parsed JSON, or None on any failure.
 
     Isolated so tests can monkeypatch it; every failure is soft — partial
-    enrichment beats a crashed scoring run.
+    enrichment beats a crashed scoring run — with ONE exception: a 429 is
+    retried (`_RATE_LIMIT_ATTEMPTS` attempts, Retry-After honoured, else
+    2s then 4s) and raises `RateLimitedError` once the budget is spent, so
+    a throttled API is never mistaken for a missing record.
     """
     import httpx
 
-    try:
-        resp = httpx.get(
-            url,
-            follow_redirects=True,
-            timeout=20,
-            headers={"User-Agent": "hyperresearch (mailto:research@example.com)"},
-        )
+    host = urlparse(url).netloc.lower()
+    attempt = 0
+    hops = 0
+    while True:
+        # Headers are recomputed per hop so the Semantic Scholar key only
+        # ever travels to a Semantic Scholar host (see _MAX_REDIRECTS).
+        headers = _request_headers(url)
+        try:
+            resp = httpx.get(url, follow_redirects=False, timeout=20, headers=headers)
+        except Exception:
+            return None
+        if resp.status_code == 429:
+            attempt += 1
+            if attempt < _RATE_LIMIT_ATTEMPTS:
+                time.sleep(_retry_after_seconds(resp, attempt - 1))
+                continue
+            raise RateLimitedError(host, _RATE_LIMIT_ATTEMPTS)
+        target = _redirect_target(resp, url)
+        if target is not None:
+            hops += 1
+            if hops > _MAX_REDIRECTS:
+                return None
+            url = target
+            continue
         if resp.status_code != 200:
             return None
-        return resp.json()
-    except Exception:
-        return None
+        try:
+            return resp.json()
+        except Exception:
+            return None
 
 
 def _fetch_json(conn, url: str, ttl_days: int, fresh: bool = False) -> dict | None:
-    """Cache-first JSON fetch through the api_cache table."""
+    """Cache-first JSON fetch through the api_cache table.
+
+    Propagates `RateLimitedError` from the HTTP layer (nothing is cached for
+    it); every other failure is None.
+    """
     now = datetime.now(UTC)
     if not fresh:
         row = conn.execute("SELECT body, fetched_at FROM api_cache WHERE url = ?", (url,)).fetchone()
@@ -152,7 +283,8 @@ def lookup_metadata(conn, doi: str, ttl_days: int, fresh: bool = False) -> dict 
     """Resolve one DOI/arXiv id to {citation_count, venue, is_retracted}.
 
     OpenAlex is primary for DOIs (it carries is_retracted directly);
-    Semantic Scholar handles arXiv ids and serves as DOI fallback.
+    Semantic Scholar handles arXiv ids and serves as DOI fallback. Raises
+    `RateLimitedError` when the API that would have answered is throttled.
     """
     if doi.lower().startswith("arxiv:"):
         arxiv_id = doi.split(":", 1)[1]
@@ -278,7 +410,10 @@ def score_sources(
     """Enrich DOI-bearing notes with citation metadata, then recompute
     authority percentiles and composite quality scores.
 
-    Returns a summary dict: {scored, retracted, missing, authority_ranked}.
+    Returns a summary dict: {scored, retracted, missing, rate_limited,
+    authority_ranked}. `missing` is "the API answered and had nothing";
+    `rate_limited` is "the API refused to answer" — those notes are NOT
+    marked enriched, so the next run retries them.
     """
     from hyperresearch.core.frontmatter import parse_frontmatter, render_note
     from hyperresearch.core.quality import compute_quality_scores
@@ -300,9 +435,14 @@ def score_sources(
     scored = 0
     retracted: list[str] = []
     missing: list[str] = []
+    rate_limited: list[str] = []
 
     for row in conn.execute(query, params).fetchall():
-        meta_result = lookup_metadata(conn, row["doi"], ttl, fresh)
+        try:
+            meta_result = lookup_metadata(conn, row["doi"], ttl, fresh)
+        except RateLimitedError:
+            rate_limited.append(row["id"])
+            continue
         if meta_result is None:
             missing.append(row["id"])
             continue
@@ -340,5 +480,6 @@ def score_sources(
         "scored": scored,
         "retracted": retracted,
         "missing": missing,
+        "rate_limited": rate_limited,
         "authority_ranked": authority_ranked,
     }

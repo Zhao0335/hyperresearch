@@ -59,9 +59,31 @@ def pagerank(
 
 
 def compute_centrality(conn) -> int:
-    """Compute and store normalized centrality for all notes. Returns count."""
-    nodes = [row["id"] for row in conn.execute("SELECT id FROM notes").fetchall()]
+    """Compute and store normalized centrality for all notes. Returns count.
+
+    Resolver-minted stub notes (`repair --stub`, `graph stub`) are left out
+    of the node set — and therefore out of the edge set, since `pagerank`
+    drops edges to unknown nodes. A stub is a placeholder that exists only
+    because something linked to it; letting it soak up rank rewards parse
+    artifacts over real sources (#93). Their stored score is reset to 0 so
+    vaults ranked before this exclusion do not keep stale weight.
+    """
+    from hyperresearch.core.note import STUB_SUMMARY_PREFIX
+
+    stub_pattern = STUB_SUMMARY_PREFIX + "%"
+    nodes = [
+        row["id"]
+        for row in conn.execute(
+            "SELECT id FROM notes WHERE COALESCE(summary, '') NOT LIKE ?",
+            (stub_pattern,),
+        ).fetchall()
+    ]
+    conn.execute(
+        "UPDATE notes SET centrality_score = 0 WHERE COALESCE(summary, '') LIKE ?",
+        (stub_pattern,),
+    )
     if not nodes:
+        conn.commit()
         return 0
     edges = [
         (row["source_id"], row["target_id"])
@@ -72,6 +94,7 @@ def compute_centrality(conn) -> int:
     scores = pagerank(nodes, edges)
     max_score = max(scores.values()) if scores else 0.0
     if max_score <= 0:
+        conn.commit()
         return 0
     for note_id, score in scores.items():
         conn.execute(

@@ -186,6 +186,7 @@ def run_resume(
     json_output: bool = typer.Option(False, "--json", "-j", help="JSON output"),
 ) -> None:
     """Print the exact position a recovering orchestrator should continue from."""
+    from hyperresearch.core.hooks import step_skill_slug
     from hyperresearch.core.runs import RunError, load_manifest, resume_position, set_status
 
     vault = _vault_or_exit(json_output)
@@ -208,11 +209,10 @@ def run_resume(
         "run_dir": str(vault.run_dir(tag)),
         "profile": manifest["profile"],
         **position,
-        "skill_to_invoke": (
-            f"hyperresearch-{position['next_step'].replace('.', '-')}"
-            if position["next_step"]
-            else None
-        ),
+        # Looked up from the installer's step-skill roster, not rebuilt by
+        # string substitution — "2" must come back as the invokable
+        # `hyperresearch-2-width-sweep`, never a bare `hyperresearch-2`.
+        "skill_to_invoke": step_skill_slug(position["next_step"]),
     }
     if json_output:
         output(success(data, vault=str(vault.root)), json_mode=True)

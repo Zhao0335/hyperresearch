@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -120,6 +121,65 @@ class TestBuiltins:
         # how most users run the pipeline. Time estimates remain.
         assert "cost_estimate" not in Profile.model_fields
         assert "time_estimate" in Profile.model_fields
+
+    # Profile fields that are legitimately consumed inside profiles.py only.
+    _UNREFERENCED_FIELDS_ALLOWED: ClassVar[frozenset[str]] = frozenset({
+        # Overlay-resolution metadata: `extends` names the built-in a user
+        # profile starts from. resolve_profile() reads it while merging;
+        # nothing downstream needs it once the profile is resolved.
+        "extends",
+    })
+
+    def test_every_profile_field_is_consumed_somewhere(self):
+        """A tunable declared on the Profile AND hardcoded where it actually
+        runs is the bug class behind #101 (`citation_density_min` sat unread
+        at 2.0 while two gates hardcoded 1.5). Every field must be read by
+        code or rendered into a skill/agent template — otherwise it is dead
+        config that drifts silently. Allowlist with a reason, never by
+        default."""
+        import re
+        from pathlib import Path
+
+        import hyperresearch
+        from hyperresearch.core.profiles import Profile
+
+        src = Path(hyperresearch.__file__).parent
+        corpus = {
+            p: p.read_text(encoding="utf-8")
+            for p in src.rglob("*")
+            if p.suffix in (".py", ".md") and p.name != "profiles.py"
+        }
+        unreferenced: list[str] = []
+        for field in Profile.model_fields:
+            if field in self._UNREFERENCED_FIELDS_ALLOWED:
+                continue
+            # Attribute access (`profile.field`, template `p.field` /
+            # `light.field`), getattr(profile, "field"), or ["field"].
+            pat = re.compile(
+                r"(?:\.|getattr\([\w.]+,\s*['\"]|\[['\"])" + re.escape(field) + r"\b"
+            )
+            if not any(pat.search(text) for text in corpus.values()):
+                unreferenced.append(field)
+        assert not unreferenced, (
+            f"Profile fields declared but never read outside profiles.py: "
+            f"{unreferenced}. Template them into the skill/agent that "
+            "hardcodes the number, read them in code, or delete them."
+        )
+
+    def test_char_targets_track_word_targets_per_gear(self):
+        """`char_targets_no_word_boundary` is authored per gear alongside
+        `word_targets` at `chars_per_word_no_word_boundary` chars per word
+        (the ratio the CJK ship gate falls back to and the density gate
+        divides by). premier/dissertation used to inherit full's character
+        targets while overriding word targets, so their CJK length gate
+        measured against another gear's numbers (#101)."""
+        for name in BUILTIN_PROFILES:
+            p = resolve_profile(name)
+            ratio = p.chars_per_word_no_word_boundary
+            assert set(p.char_targets_no_word_boundary) == set(p.word_targets), name
+            for fmt, (low_w, high_w) in p.word_targets.items():
+                expected = (int(low_w * ratio), int(high_w * ratio))
+                assert p.char_targets_no_word_boundary[fmt] == expected, (name, fmt)
 
 
 class TestUserOverlay:

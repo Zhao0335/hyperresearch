@@ -2,7 +2,7 @@
 name: hyperresearch-6-cross-locus-reconcile
 description: >
   Step 6 of the hyperresearch V8 pipeline. Reconciles the committed positions
-  from all depth investigators into research/runs/<vault_tag>/comparisons.md — 3-5 named
+  from all depth investigators into research/runs/<vault_tag>/comparisons.md — << p.comparisons_tensions|hyphen >> named
   cross-locus tensions with engagement guidance for the draft. This is
   the structural step that gives the single draft argumentative density.
   Invoked via Skill tool from the entry skill (full tier only).
@@ -12,7 +12,7 @@ description: >
 
 **Tier gate:** SKIP entirely for `light` tier (no loci = no comparisons). Only `full` tier runs this step.
 
-**Goal:** before drafting, reconcile the committed positions from all depth investigators. Produce `research/runs/<vault_tag>/comparisons.md` — a short document naming 3–5 places where the loci conflict or complicate each other.
+**Goal:** before drafting, reconcile the committed positions from all depth investigators. Produce `research/runs/<vault_tag>/comparisons.md` — a short document naming << p.comparisons_tensions|dash >> places where the loci conflict or complicate each other.
 
 **Why this step exists:** the depth investigators each committed to a position on their own locus. Some of those positions disagree, some reinforce each other, some partially complicate each other. The draft must engage those cross-locus dynamics explicitly — not summarize each locus in isolation. Writing `comparisons.md` forces you to see the loci in cross-section before opening the draft.
 
@@ -42,7 +42,7 @@ You need the `## Committed position` section from every interim note in your con
    - Is one locus's position a special case of another's general claim?
    - Do they converge on a conclusion but via different mechanisms (worth noting — convergence from independent paths is itself a finding)?
 
-3. **Pick the 3–5 strongest cross-locus dynamics.** Reject weak ones (loci that are simply orthogonal, or that restate each other). You want cross-locus relationships that a good final draft should actually wrestle with.
+3. **Pick the << p.comparisons_tensions|dash >> strongest cross-locus dynamics.** Reject weak ones (loci that are simply orthogonal, or that restate each other). You want cross-locus relationships that a good final draft should actually wrestle with.
 
 4. **Write `research/runs/<vault_tag>/comparisons.md`:**
 
@@ -68,7 +68,7 @@ You need the `## Committed position` section from every interim note in your con
 ## Exit criterion
 
 - `research/runs/<vault_tag>/comparisons.md` exists
-- Contains 3–5 named tensions (or 1 distilled position for single-locus runs)
+- Contains << p.comparisons_tensions|dash >> named tensions (or 1 distilled position for single-locus runs)
 - Each tension includes: locus references, dynamic description, engagement guidance, calibration note
 
 ---

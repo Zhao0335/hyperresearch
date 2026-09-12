@@ -139,13 +139,28 @@ class Profile(BaseModel):
     word_targets: dict[str, Range]
     # Character-count targets for response_formats whose script doesn't
     # delimit words with ASCII whitespace (see runs.py:_lacks_word_boundaries).
-    # An editorial constant per format, exactly like word_targets itself --
-    # not derived from any word-per-character formula. Shipped values are
-    # tuned for CJK, the only such script family this project has real usage
-    # data for; deployments serving a different one (Thai, Lao, Khmer, ...)
+    # Authored per gear, alongside that gear's word_targets, at 3 chars per
+    # word (the built-ins keep the two in lockstep — a gear that raises its
+    # word targets must raise these too, or its CJK ship gate silently
+    # measures against another gear's numbers). Shipped values are tuned
+    # for CJK, the only such script family this project has real usage data
+    # for; deployments serving a different one (Thai, Lao, Khmer, ...)
     # override this per profile in .hyperresearch/config.toml, the same way
     # they'd override word_targets or any other tunable.
     char_targets_no_word_boundary: dict[str, Range] = Field(default_factory=dict)
+    # Characters that stand in for one word when the script has no word
+    # boundaries. The built-in char_targets_no_word_boundary are word_targets
+    # times this; the CJK length gate falls back to it for a format with no
+    # explicit char target; and the citation-density gate divides character
+    # counts by it so "per 1000 words" means the same amount of content in
+    # every script.
+    chars_per_word_no_word_boundary: float = 3.0
+    # Ship-gate floor for `run verify`'s citation-density check, and the
+    # re-count trigger the instruction critic and synthesizer are told to
+    # apply: cited-source references per 1000 words. For scripts without
+    # word boundaries the word count is characters / chars_per_word_no_word_boundary,
+    # so the floor is script-neutral — the same references per unit of
+    # content whether the report is English or Japanese.
     citation_density_min: float
     citation_totals: dict[str, Range]
 
@@ -235,8 +250,13 @@ _FULL: dict = {
     "single_draft_reads": (8, 15),
     "must_read": {"argumentative": (35, 50), "structured": (25, 40), "short": (20, 30)},
     "word_targets": {"short": (500, 2000), "structured": (2000, 5000), "argumentative": (5000, 10000)},
-    "char_targets_no_word_boundary": {"short": (1500, 6000), "structured": (6000, 15000), "argumentative": (20000, 25000)},
-    "citation_density_min": 2.0,
+    "char_targets_no_word_boundary": {"short": (1500, 6000), "structured": (6000, 15000), "argumentative": (15000, 30000)},
+    "chars_per_word_no_word_boundary": 3.0,
+    # 9 per 1000 words is the old 1.5-per-1000-characters floor expressed in
+    # words for English prose (~6 characters per word including the space),
+    # so English verdicts are unchanged; CJK reports are now held to the
+    # same floor per unit of content instead of a ~2x looser one.
+    "citation_density_min": 9.0,
     "citation_totals": {"argumentative": (80, 150), "structured": (40, 80), "short": (15, 30)},
     "critic_finding_caps": {"dialectic": 12, "depth": 12, "width": 10, "instruction": 15},
     "gap_fetch_cap": 5,
@@ -303,6 +323,7 @@ _PREMIER: dict = {
     "claims_min": 50,
     "must_read": {"argumentative": (50, 70), "structured": (35, 55), "short": (20, 30)},
     "word_targets": {"short": (500, 2000), "structured": (3000, 8000), "argumentative": (8000, 16000)},
+    "char_targets_no_word_boundary": {"short": (1500, 6000), "structured": (9000, 24000), "argumentative": (24000, 48000)},
     "citation_totals": {"argumentative": (120, 220), "structured": (60, 110), "short": (15, 30)},
     "critic_finding_caps": {"dialectic": 16, "depth": 16, "width": 14, "instruction": 18},
     "gap_fetch_cap": 8,
@@ -337,6 +358,10 @@ _DISSERTATION: dict = {
     "word_targets": {
         **_FULL["word_targets"],
         "dissertation": (25000, 80000),
+    },
+    "char_targets_no_word_boundary": {
+        **_FULL["char_targets_no_word_boundary"],
+        "dissertation": (75000, 240000),
     },
     "citation_totals": {
         **_FULL["citation_totals"],

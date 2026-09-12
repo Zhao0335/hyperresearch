@@ -31,7 +31,7 @@ Survey the corpus: `$HPR note list --tag <vault_tag> --all -j` to confirm width 
 
 ## Procedure
 
-1. **Spawn 2 `hyperresearch-loci-analyst` subagents in parallel** (ONE message, both Task calls). Both read the same width corpus but return independently.
+1. **Spawn 2 `hyperresearch-loci-analyst` subagents in parallel** (ONE message, all 2 Task calls). Each analyst gets a letter id in order — `a`, `b`, `c`, ... — and writes to its own output file. All read the same width corpus but return independently.
 
    **Spawn template:**
    ```
@@ -42,27 +42,27 @@ Survey the corpus: `$HPR note list --tag <vault_tag> --all -j` to confirm width 
 
      QUERY FILE: research/runs/<vault_tag>/query.md
 
-     PIPELINE POSITION: You are step 4 (loci-analyst, instance A or B) of
+     PIPELINE POSITION: You are step 4 (loci-analyst, instance <analyst_id> of 2) of
      the hyperresearch V8 pipeline. The width sweep (step 2) populated the vault
      tagged <vault_tag>. The contradiction graph (step 3) lives at
      research/runs/<vault_tag>/temp/contradiction-graph.json. After you and the other
-     analyst return, the orchestrator dedupes your loci and assigns budgets.
+     analysts return, the orchestrator dedupes your loci and assigns budgets.
 
      YOUR INPUTS:
      - corpus_tag: <vault_tag>
-     - analyst_id: "a" (for one) / "b" (for the other)
-     - output_path: research/runs/<vault_tag>/loci-a.json (or research/runs/<vault_tag>/loci-b.json)
+     - analyst_id: "<analyst_id>" (one letter per analyst: a, b, c, ...)
+     - output_path: research/runs/<vault_tag>/loci-<analyst_id>.json
 
      RUN DIRECTIVES: append the FULL contents of research/runs/<vault_tag>/shims/research.md here, verbatim.
    ```
 
-2. **Wait for both.** If one fails, proceed with the single successful output. If both fail (empty loci lists), tell the user the width sweep was too thin and stop — do not force depth on a weak corpus.
+2. **Wait for all 2.** If some fail, proceed with the successful outputs. If every analyst fails (empty loci lists), tell the user the width sweep was too thin and stop — do not force depth on a weak corpus.
 
 3. **Deduplicate and clamp to 6.**
-   - Read both JSON outputs.
+   - Read every analyst's JSON output (`research/runs/<vault_tag>/loci-<analyst_id>.json`).
    - Dedupe on `name` (exact match) or near-match (same core question, different phrasing). When in doubt, prefer the entry with stronger `corpus_evidence`.
    - If the deduped list exceeds 6, drop the weakest entries — rank by how load-bearing the rationale is for the canonical research query.
-   - **Persist both analysts' `skip_loci` arrays** in the merged output — union them under a top-level `skip_loci` key. These justifications matter downstream.
+   - **Persist every analyst's `skip_loci` array** in the merged output — union them under a top-level `skip_loci` key. These justifications matter downstream.
 
 4. **Score and budget each locus (dynamic depth allocation).** For each surviving locus, compute four dimensions:
    - **importance** (0-10): how central is this locus to the research_query? A locus that directly answers a primary sub-question scores 8-10; tangential enrichment scores 2-4.
@@ -97,7 +97,7 @@ Survey the corpus: `$HPR note list --tag <vault_tag> --all -j` to confirm width 
          "rationale": "..."
        }
      ],
-     "skip_loci": [...union from both analysts...]
+     "skip_loci": [...union from all analysts...]
    }
    ```
 
@@ -119,7 +119,7 @@ Survey the corpus: `$HPR note list --tag <vault_tag> --all -j` to confirm width 
 
 ## Exit criterion
 
-- `research/runs/<vault_tag>/loci.json` exists with at least 1 locus (or both analysts justified skip with `skip_loci`)
+- `research/runs/<vault_tag>/loci.json` exists with at least 1 locus (or every analyst justified skip with `skip_loci`)
 - At least one dialectical locus OR a documented justification in `skip_loci`
 - All retained loci have `source_budget` allocated
 

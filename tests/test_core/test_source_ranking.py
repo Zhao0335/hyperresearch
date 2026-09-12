@@ -199,3 +199,63 @@ class TestRankedSearch:
         assert result.exit_code == 0
         payload = json.loads(result.stdout)
         assert payload["ok"] is True
+
+
+class TestStubExclusion:
+    """Resolver-minted stubs (`repair --stub` / `graph stub`) must not pollute
+    either ranker: a stub exists only because something linked to it, so its
+    inbound-link count is tautological (issue #93).
+    """
+
+    @staticmethod
+    def _mint_stub(vault, target: str) -> None:
+        from hyperresearch.core.note import stub_summary, write_note
+        from hyperresearch.core.sync import compute_sync_plan, execute_sync
+
+        # Mirror cli/repair.py + cli/graph.py exactly.
+        write_note(
+            vault.temp_dir,
+            target.replace("-", " ").title(),
+            body=f"# {target}\n\n*Stub — created to resolve a broken link. Expand this note.*\n",
+            note_id=target,
+            status="draft",
+            summary=stub_summary(target),
+        )
+        execute_sync(vault, compute_sync_plan(vault))
+
+    def test_stub_absent_from_most_linked_index(self, seeded_vault):
+        from hyperresearch.indexgen.generator import IndexGenerator
+
+        # seeded_vault's "concurrency" MOC links to [[nonexistent-topic]].
+        self._mint_stub(seeded_vault, "nonexistent-topic")
+        resolved = seeded_vault.db.execute(
+            "SELECT target_id FROM links WHERE target_ref = 'nonexistent-topic'"
+        ).fetchone()
+        assert resolved["target_id"] == "nonexistent-topic"  # the link DID resolve
+
+        gen = IndexGenerator(seeded_vault)
+        gen._build_most_linked()
+        text = (seeded_vault.index_dir / "_most-linked.md").read_text(encoding="utf-8")
+        assert "[[nonexistent-topic]]" not in text
+        assert "[[concurrency]]" in text  # real hubs still listed
+
+    def test_stub_receives_no_pagerank_weight(self, seeded_vault):
+        self._mint_stub(seeded_vault, "nonexistent-topic")
+        # Simulate a vault ranked BEFORE the exclusion: stale weight on the stub.
+        seeded_vault.db.execute(
+            "UPDATE notes SET centrality_score = 0.9 WHERE id = 'nonexistent-topic'"
+        )
+        seeded_vault.db.commit()
+
+        n = compute_centrality(seeded_vault.db)
+        by_id = {
+            r["id"]: r["centrality_score"]
+            for r in seeded_vault.db.execute("SELECT id, centrality_score FROM notes").fetchall()
+        }
+        assert "nonexistent-topic" in by_id
+        assert by_id["nonexistent-topic"] == 0.0
+        # Stub was excluded from the ranked node set entirely.
+        assert n == len(by_id) - 1
+        # Real notes still ranked and normalized.
+        assert max(by_id.values()) == 1.0
+        assert by_id["concurrency"] > by_id["orphan-note"]

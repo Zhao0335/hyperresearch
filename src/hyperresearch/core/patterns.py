@@ -4,8 +4,24 @@ from __future__ import annotations
 
 import re
 
-# Match [[target]] and [[target|display text]]
-WIKI_LINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
+# Match [[target]] and [[target|display text]].
+#
+# The trailing `(?!\()` rejects `[[Label]](https://url)` — a markdown link
+# whose *label* happens to be bracketed, common on GitHub READMEs,
+# awesome-lists and Wikipedia-style footnotes (`[[100]](…#cite_note-100)`).
+# Without it every such label becomes a wiki-link target, sync writes it to
+# the `links` table, and `repair` / `graph stub` mint a stub note for it. A
+# real wiki-link is never immediately followed by `(`; a parenthetical
+# after a space (`[[note]] (2024)`) still matches (issue #93).
+#
+# Neither character class admits `[`. Page bodies are attacker-controlled
+# and this runs on every sync: with `[` allowed, a line of N `[` characters
+# made every `[[` start position eat to the end of the run before failing —
+# quadratic, ~20 s at 40 KB and unbounded at 1 MB. Excluding `[` makes a
+# candidate fail at its first extra bracket, so scanning is linear. A target
+# with an interior `[` (`[[t.IO[t.Any]]`) was already rejected downstream by
+# is_valid_wiki_link_target's bracket-balance check; now it never matches.
+WIKI_LINK_RE = re.compile(r"\[\[([^\]\[|]+)(?:\|[^\]\[]+)?\]\](?!\()")
 
 # Code block patterns for stripping before link extraction
 CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
@@ -55,6 +71,12 @@ _DOC_REF_PREFIX_RE = re.compile(
 )
 
 
+# Unsubstituted template placeholders: [[{note_id}]], [[run-{vault_tag}]].
+# Skill prompts and agent scaffolds carry these literally; when one leaks
+# into a note body it must not become a link target (issue #93).
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{[^{}]*\}")
+
+
 def is_valid_wiki_link_target(ref: str) -> bool:
     """Return True if a ``[[ref]]`` should be treated as a note reference.
 
@@ -72,6 +94,9 @@ def is_valid_wiki_link_target(ref: str) -> bool:
     - Symbol footnotes: ``[[*]]``, ``[[**]]``, ``[[†]]``, ``[[‡]]``, ``[[§]]``
     - Document cross-references: ``[[fig-3]]``, ``[[tab-1]]``, ``[[eq-2]]``,
       ``[[figure-4b]]``, ``[[scheme-3]]``, ``[[algorithm-2]]``
+    - Unsubstituted template placeholders: ``[[{note_id}]]``, ``[[run-{tag}]]``
+    - Unbalanced square brackets: ``[[t.IO[t.Any]]`` (a type annotation whose
+      closing ``]`` was eaten by the ``]]`` delimiter)
 
     Valid note references starting with digits (e.g. ``[[10-rules-for-X]]``)
     are preserved because they contain non-digit characters.
@@ -90,5 +115,9 @@ def is_valid_wiki_link_target(ref: str) -> bool:
     if _ROMAN_FOOTNOTE_RE.match(ref):
         return False
     if _SYMBOL_FOOTNOTE_RE.match(ref):
+        return False
+    if _TEMPLATE_PLACEHOLDER_RE.search(ref):
+        return False
+    if ref.count("[") != ref.count("]"):
         return False
     return not _DOC_REF_PREFIX_RE.match(ref)

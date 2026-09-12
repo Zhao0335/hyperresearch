@@ -223,8 +223,9 @@ them on first use (inline parenthetical or dedicated glossary), emit:
 **Check R2: Citation density.**
 Count cited-source references in the body (excluding the ## Sources
 section) — a grouped marker like `[7, 12]` counts as two. Count total
-body characters. If the ratio is below **1.5 citations per 1000
-characters**, emit:
+body words (for a script that doesn't space-delimit words — Chinese,
+Japanese, Thai — count characters and divide by 3). If the
+ratio is below **9 citations per 1000 words**, emit:
   - `failure_mode`: `"low-citation-density"`
   - `severity`: `major`
   - `recommendation`: identify 5-8 claim-dense passages with no

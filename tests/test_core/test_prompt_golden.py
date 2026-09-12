@@ -87,6 +87,23 @@ Deliberate deviations already folded into the goldens (2026-07-19):
     golden-covered) gained pass-1 item 12 (coverage and mechanism depth are
     load-bearing content), a reframed selectivity paragraph (select sources,
     not points), and a "never cut a point to hit the ceiling" clause.
+  - Profile constants authored once (2026-09-11, #101): step 4 and the
+    loci-analyst agent became generic over `p.loci_analysts` / `p.loci_max`
+    ("both Task calls", `loci-a.json`/`loci-b.json`, "exceeds 6" were
+    hardcoded next to the templated count and broke on premier's 3
+    analysts); triple-draft's CJK char column now renders
+    `p.char_targets_no_word_boundary` (argumentative 20000–25000 became
+    15000–30000, the 3-chars-per-word ratio every other format already
+    used); the instruction critic's density trigger, the synthesizer's
+    citation totals + floor, the draft orchestrator's word targets, and
+    the width-sweep utility-scoring gate + vault-check interval all render
+    from the profile — byte-identical under `full`.
+  - Script-neutral citation density (2026-09-11, #76): the instruction
+    critic's R2 (and the synthesizer, not golden-covered) count words —
+    characters / `p.chars_per_word_no_word_boundary` for scripts without
+    word boundaries — against `p.citation_density_min` per 1000 WORDS (9,
+    the old 1.5-per-1000-characters floor expressed in English words)
+    instead of per 1000 characters.
 """
 
 from __future__ import annotations
@@ -186,6 +203,45 @@ def test_premier_gear_renders_cleanly(skill_name):
     if skill_name == "hyperresearch":
         assert "currently `premier`" in rendered
         assert "~3–5 hours" in rendered
+        # The step table's counts follow the gear (premier: 3 loci-analysts).
+        assert "| 3 loci-analysts → scored loci.json" in rendered
+    if skill_name == "hyperresearch-4-loci-analysis":
+        # premier spawns 3 analysts and clamps to 10 loci; nothing in the
+        # prose may still assume two analysts or six loci (#101).
+        assert "Spawn 3 `hyperresearch-loci-analyst`" in rendered
+        assert "Wait for all 3." in rendered
+        assert "clamp to 10." in rendered
+        assert "exceeds 10," in rendered
+        for stale in (
+            "both Task calls", "Wait for both", "both analysts", "Read both",
+            "loci-a.json", "loci-b.json", "instance A or B", "exceeds 6",
+        ):
+            assert stale not in rendered, stale
+    if skill_name == "hyperresearch-10-triple-draft":
+        # premier word targets carry their own CJK char targets (3:1).
+        assert "8000–16000 words / 24000–48000 chars (CJK)" in rendered
+
+
+def test_premier_gear_agents_carry_premier_numbers():
+    """Agent prompts that used to hardcode full-gear numbers next to a
+    templated sibling must follow the gear too (#101)."""
+    ctx = build_render_context(None, primary="premier")
+    draft = render_prompt(hooks.DRAFT_ORCHESTRATOR_AGENT, ctx)
+    synth = render_prompt(hooks.SYNTHESIZER_AGENT, ctx)
+    # Draft orchestrator and synthesizer now agree on the argumentative target.
+    assert '`"argumentative"`: 8000-16000 words.' in draft
+    assert '| `"argumentative"` | 8000-16000 words |' in synth
+    assert "5000-10000" not in draft
+    assert "120-220\n   total cited-source references" in synth
+    loci = render_prompt(hooks.LOCI_ANALYST_AGENT, ctx)
+    assert "2 other loci-analysts (your parallel siblings)" in loci
+    assert "which of the 3 parallel" in loci
+    assert "clamp\nto 10 loci" in loci
+    critic = render_prompt(hooks.INSTRUCTION_CRITIC_AGENT, ctx)
+    assert "**9 citations per 1000 words**" in critic
+    assert "divide by 3)" in critic
+    for prompt in (draft, synth, loci, critic):
+        assert "<<" not in prompt and ">>" not in prompt
 
 
 def test_install_writes_rendered_prompts_with_header(tmp_vault):

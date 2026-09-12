@@ -325,3 +325,35 @@ def test_sync_registers_capped_collision_notes_separately(tmp_vault):
     rows = tmp_vault.db.execute("SELECT id FROM notes ORDER BY id").fetchall()
     ids = {r["id"] for r in rows}
     assert ids == {p1.stem, p2.stem}
+
+
+def test_sync_skips_bracketed_markdown_link_labels(tmp_vault):
+    """`[[Foo]](https://x)` is a markdown link with a bracketed label, not a
+    wiki-link. It must produce NO row in `links` — otherwise `repair --stub`
+    (the default) mints a stub note named `Foo` for it (issue #93).
+    """
+    from hyperresearch.core.note import write_note
+
+    write_note(
+        tmp_vault.notes_dir,
+        "Awesome List",
+        body=(
+            "# Awesome List\n\n"
+            "- [[Foo]](https://x.example/foo) — a bracketed markdown label\n"
+            "- [[Bar|Display]](https://x.example/bar)\n"
+            "- [[real-target]] (2024) — a real wiki-link with a parenthetical\n"
+        ),
+        note_id="awesome-list",
+    )
+
+    plan = compute_sync_plan(tmp_vault, force=True)
+    result = execute_sync(tmp_vault, plan)
+    assert result.errors == []
+
+    refs = sorted(
+        r["target_ref"]
+        for r in tmp_vault.db.execute(
+            "SELECT target_ref FROM links WHERE source_id = ?", ("awesome-list",)
+        ).fetchall()
+    )
+    assert refs == ["real-target"]

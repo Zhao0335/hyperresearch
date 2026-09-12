@@ -4,7 +4,7 @@ description: >
   Step 7 of the hyperresearch V8 pipeline. Extracts explicit expert
   disagreements from the corpus into research/runs/<vault_tag>/temp/source-tensions.json,
   including orphan tensions that didn't surface as loci. Reads full source
-  bodies of top 8-12 sources (not summaries) to find tensions that hide
+  bodies of top << p.tension_full_reads|hyphen >> sources (not summaries) to find tensions that hide
   in nuance. The Source Tensions section in step 10's draft is the single
   highest-leverage move for insight scores. Invoked via Skill tool from
   the entry skill (full tier only).
@@ -26,7 +26,7 @@ Read these inputs:
 - `research/runs/<vault_tag>/scaffold.md` — vault_tag
 - `research/runs/<vault_tag>/comparisons.md` — cross-locus tensions
 - `research/runs/<vault_tag>/temp/contradiction-graph.json` (if step 3 ran)
-- Survey vault: `$HPR note list --tag <vault_tag> --all -j` for the 15–20 highest-quality non-deprecated sources
+- Survey vault: `$HPR note list --tag <vault_tag> --all -j` for the << p.tension_survey|dash >> highest-quality non-deprecated sources
 
 ---
 
@@ -34,7 +34,7 @@ Read these inputs:
 
 1. **Re-read `comparisons.md`.** Each tension there is already a candidate source tension. Extract: the two positions, the strongest evidence for each, your preliminary reading of which side has the better case.
 
-2. **Scan the width corpus for orphan tensions.** For the 15–20 highest-quality non-deprecated sources, then **read the full body** of the top 8–12 sources most likely to contain disagreements — use `$HPR note show <id1> <id2> ... -j` in batches. **Tensions hide in nuance that summaries flatten:** a source's "however" clause, a footnote caveat, a methodological critique buried in a discussion section. You cannot extract tensions you haven't read. Look for:
+2. **Scan the width corpus for orphan tensions.** For the << p.tension_survey|dash >> highest-quality non-deprecated sources, then **read the full body** of the top << p.tension_full_reads|dash >> sources most likely to contain disagreements — use `$HPR note show <id1> <id2> ... -j` in batches. **Tensions hide in nuance that summaries flatten:** a source's "however" clause, a footnote caveat, a methodological critique buried in a discussion section. You cannot extract tensions you haven't read. Look for:
    - Sources that explicitly disagree with each other (different conclusions from similar evidence)
    - Sources that use competing theoretical frameworks to explain the same phenomenon
    - Sources where one side cites data the other side ignores
@@ -44,7 +44,7 @@ Read these inputs:
 
 3. **If `research/runs/<vault_tag>/temp/contradiction-graph.json` exists**, read it. Any high-relevance fight cluster that was NOT promoted to a locus is a prime orphan-tension candidate. It was important enough for the contradiction graph but wasn't investigated in depth — these deserve standalone treatment in the draft.
 
-4. **Select 3–7 source tensions.** Combine comparisons.md tensions with orphan tensions. Rank by:
+4. **Select << p.source_tensions|dash >> source tensions.** Combine comparisons.md tensions with orphan tensions. Rank by:
    - **Decision relevance:** does resolving this tension change the report's recommendation?
    - **Evidence quality:** are both sides grounded in real evidence (not just opinion)?
    - **Reader value:** would an expert reader find this tension illuminating?
@@ -87,7 +87,7 @@ This artifact feeds directly into step 10's mandatory Source Tensions section. E
 
 ## Exit criterion
 
-- `research/runs/<vault_tag>/temp/source-tensions.json` exists with 3–7 tensions
+- `research/runs/<vault_tag>/temp/source-tensions.json` exists with << p.source_tensions|dash >> tensions
 - Each tension has both sides with proponents, a committed resolution, and decision_relevance
 
 ---

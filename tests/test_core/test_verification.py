@@ -450,16 +450,132 @@ class TestTelemetryAndVerify:
             "required_section_headings": ["## Findings"],
         }), encoding="utf-8")
         report = tmp_vault.root / "research" / "notes" / "final_report_vf-04.md"
-        filler = "Substantive analysis continues with replicated evidence in view. " * 11
+        filler = "Substantive analysis continues with replicated evidence in view. " * 14
         block = filler + "The consensus across measurements holds [1, 2, 3]. "
         report.write_text("## Findings\n\n" + block * 8, encoding="utf-8")
 
         result = verify_run(tmp_vault, "vf-04")
         by_name = {c["name"]: c for c in result["checks"]}
-        # One bracket per ~770 chars sits under the 1.5/1000 floor; the three
-        # sources inside each grouped bracket clear it. Counting markers
-        # instead of cited-source numbers would fail this check.
+        # One bracket per 133 words (~7.5/1000) sits under the 9/1000 floor;
+        # the three sources inside each grouped bracket clear it (~22/1000).
+        # Counting markers instead of cited-source numbers would fail this.
         assert by_name["citation-density"]["ok"]
+        assert "citations/1000 words" in by_name["citation-density"]["detail"]
+
+    @staticmethod
+    def _density_check(tmp_vault, tag: str, body: str, heading: str = "## Findings") -> dict:
+        init_run(tmp_vault, tag, profile="light")
+        run_dir = tmp_vault.run_dir(tag)
+        (run_dir / "prompt-decomposition.json").write_text(json.dumps({
+            "response_format": "short",
+            "required_section_headings": [heading],
+        }), encoding="utf-8")
+        report = tmp_vault.root / "research" / "notes" / f"final_report_{tag}.md"
+        report.write_text(body, encoding="utf-8")
+        result = verify_run(tmp_vault, tag)
+        return {c["name"]: c for c in result["checks"]}["citation-density"]
+
+    def test_density_english_boundary_is_nine_per_thousand_words(self, tmp_vault):
+        """The floor is 9 cited-source references per 1000 words — the old
+        1.5-per-1000-characters floor expressed in words for English prose
+        (~6 characters per word incl. the space), so English verdicts don't
+        move (#76). Exactly 9 in 1000 words passes; 8 fails."""
+        cited = "Replicated measurements support the committed position here [1]. "
+        plain = "Replicated measurements support the committed position here too. "
+
+        def report(n_cited: int) -> str:
+            # n_cited cited sentences, then plain prose, padded with single
+            # tokens to exactly 1000 whitespace-delimited words.
+            body = "## Findings\n\n" + cited * n_cited
+            while len((body + plain).split()) <= 1000:
+                body += plain
+            body += "pad " * (1000 - len(body.split()))
+            assert len(body.split()) == 1000, len(body.split())
+            return body
+
+        ok = self._density_check(tmp_vault, "den-en-1", report(9))
+        assert ok["ok"] is True, ok
+        assert ok["detail"].startswith("9.00 citations/1000 words (floor 9.0)")
+        fail = self._density_check(tmp_vault, "den-en-2", report(8))
+        assert fail["ok"] is False, fail
+
+    def test_density_cjk_clears_the_same_floor_per_unit_of_content(self, tmp_vault):
+        """A Japanese report has no ASCII word boundaries, so the denominator
+        is characters / chars_per_word_no_word_boundary (3): one citation
+        per ~50 characters is ~60 per 1000 effective words and passes; one
+        per ~600 characters (~5 per 1000 words) fails — even though the
+        old per-character floor (1.67 per 1000 chars) would have passed it.
+        The floor now means the same amount of content in every script."""
+        dense = "この文章は再現された測定結果に基づく実質的な証拠を示している[1]。"  # ~34 chars, 1 cite
+        assert 30 <= len(dense) <= 40
+        body = "## 結果\n\n" + dense * 60
+        ok = self._density_check(tmp_vault, "den-ja-1", body, heading="## 結果")
+        assert ok["ok"] is True, ok
+        assert "no word boundaries" in ok["detail"]
+
+        sparse_filler = "この文章は再現された測定結果に基づく実質的な証拠を示している。"  # ~31 chars
+        sparse = sparse_filler * 18 + "この文章は再現された測定結果に基づく実質的な証拠を示している[1]。"
+        assert 560 <= len(sparse) <= 640
+        from hyperresearch.core.runs import _lacks_word_boundaries
+
+        assert _lacks_word_boundaries(sparse)
+        body = "## 結果\n\n" + sparse * 4
+        old_chars_density = 4 / len(body) * 1000
+        assert old_chars_density >= 1.5  # would have cleared the old gate
+        fail = self._density_check(tmp_vault, "den-ja-2", body, heading="## 結果")
+        assert fail["ok"] is False, fail
+
+    def test_density_korean_takes_the_word_path(self, tmp_vault):
+        """Korean is space-delimited, so it is counted by words like English
+        — the detail names plain words, not the chars/ratio denominator."""
+        sentence = "이 문장은 반복된 측정에서 확인된 실질적인 근거를 제시한다 [1]. "  # 9 tokens, 1 cite
+        body = "## 결과\n\n" + sentence * 60
+        from hyperresearch.core.runs import _lacks_word_boundaries
+
+        assert not _lacks_word_boundaries(body)
+        res = self._density_check(tmp_vault, "den-ko-1", body, heading="## 결과")
+        assert res["ok"] is True, res
+        assert "citations/1000 words (floor" in res["detail"]
+        assert "no word boundaries" not in res["detail"]
+
+    def test_density_counts_wikilinks_with_the_shared_pattern(self, tmp_vault):
+        """[[...]] citations are counted with core.patterns.WIKI_LINK_RE, not
+        a private regex, so this gate agrees with lint and cite-check about
+        what a wiki-link citation is."""
+        from hyperresearch.core.patterns import WIKI_LINK_RE
+
+        plain = "Replicated measurements support the committed position here too. "
+        body = "## Findings\n\n" + (
+            "Evidence sits in the vault [[src-note-alpha]] and [[src-note-beta|Beta]]. "
+            + plain * 3
+        ) * 20
+        expected = len(WIKI_LINK_RE.findall(body))
+        assert expected == 40
+        res = self._density_check(tmp_vault, "den-wl-1", body)
+        words = len(body.split())
+        assert res["detail"].startswith(f"{expected * 1000 / words:.2f} citations/1000 words")
+
+    def test_verify_density_floor_comes_from_profile(self, tmp_vault):
+        """`citation_density_min` used to be dead config (declared, never
+        read) while the gate hardcoded its own floor (#101). A profile
+        overlay must now move the gate."""
+        cfg = tmp_vault.root / ".hyperresearch" / "config.toml"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text("[profile.light]\ncitation_density_min = 10000\n", encoding="utf-8")
+        init_run(tmp_vault, "vf-05", profile="light")
+        run_dir = tmp_vault.run_dir("vf-05")
+        (run_dir / "prompt-decomposition.json").write_text(json.dumps({
+            "response_format": "short",
+            "required_section_headings": ["## Findings"],
+        }), encoding="utf-8")
+        report = tmp_vault.root / "research" / "notes" / "final_report_vf-05.md"
+        body = "## Findings\n\n" + ("Substantive sentence with real evidence attached [[src-note]]. " * 80)
+        report.write_text(body, encoding="utf-8")
+
+        result = verify_run(tmp_vault, "vf-05")
+        by_name = {c["name"]: c for c in result["checks"]}
+        assert by_name["citation-density"]["ok"] is False
+        assert "floor 10000" in by_name["citation-density"]["detail"]
 
     def test_verify_fails_on_missing_heading_and_report(self, tmp_vault):
         init_run(tmp_vault, "vf-02", profile="light")
