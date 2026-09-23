@@ -111,36 +111,41 @@ def _write_tagged_note(vault, note_id: str, vault_tag: str, raw_file: str | None
     execute_sync(vault, compute_sync_plan(vault, force=True))
 
 
+def _add_source(vault, note_id: str, url: str) -> None:
+    with vault.db as conn:
+        conn.execute("INSERT INTO sources (url, note_id) VALUES (?, ?)", (url, note_id))
+
+
 class TestReconcileSpend:
-    def test_reconcile_counts_notes_and_raw_sources_by_tag(self, tmp_vault):
+    def test_reconcile_counts_fetched_urls_by_tag(self, tmp_vault):
         init_run(tmp_vault, "r-000001", budget_usd=1.0)
         raw = tmp_vault.research_dir / "raw"
         raw.mkdir(parents=True, exist_ok=True)
         (raw / "paper.pdf").write_bytes(b"%PDF-1.4")
-        _write_tagged_note(tmp_vault, "alpha", "r-000001", raw_file="raw/paper.pdf")
-        _write_tagged_note(tmp_vault, "beta", "r-000001")
-        # Untagged note must not count toward this run.
-        notes = tmp_vault.notes_dir
-        (notes / "other.md").write_text(
-            "---\nid: other\ntitle: other\ntags: [other-run]\n---\n\nx\n",
-            encoding="utf-8",
-        )
-        from hyperresearch.core.sync import compute_sync_plan, execute_sync
-
-        execute_sync(tmp_vault, compute_sync_plan(tmp_vault, force=True))
+        for i in range(5):
+            note_id = f"html-{i}"
+            _write_tagged_note(tmp_vault, note_id, "r-000001")
+            _add_source(tmp_vault, note_id, f"https://example.com/{i}")
+        _write_tagged_note(tmp_vault, "paper", "r-000001", raw_file="raw/paper.pdf")
+        _add_source(tmp_vault, "paper", "https://example.com/paper.pdf")
+        _write_tagged_note(tmp_vault, "other", "other-run")
+        _add_source(tmp_vault, "other", "https://example.com/other")
 
         m = reconcile_spend_from_disk(tmp_vault, "r-000001")
-        assert m["spend"]["notes_written"] == 2
-        assert m["spend"]["sources_fetched"] == 1
+        assert m["spend"]["notes_written"] == 6
+        assert m["spend"]["sources_fetched"] == 6
         # No unit prices in this repo — estimated_usd only moves via add_spend.
         assert m["spend"]["estimated_usd"] == 0.0
         assert m["status"] == "running"
 
     def test_reconcile_keeps_agent_estimate(self, tmp_vault):
         init_run(tmp_vault, "r-000003")
-        add_spend(tmp_vault, "r-000003", estimated_usd=12.5)
+        add_spend(tmp_vault, "r-000003", estimated_usd=12.5, agents_spawned=2)
+        for _ in range(3):
+            runs_mod.record_event(tmp_vault, "r-000003", {"type": "agent_spawn"})
         m = reconcile_spend_from_disk(tmp_vault, "r-000003")
         assert m["spend"]["estimated_usd"] == 12.5
+        assert m["spend"]["agents_spawned"] == 2
 
     def test_init_stores_count_ceilings(self, tmp_vault):
         m = init_run(tmp_vault, "r-000004", max_sources=10, max_notes=20)
@@ -159,12 +164,10 @@ class TestReconcileSpend:
 
     def test_max_sources_blocks_on_step_done(self, tmp_vault):
         init_run(tmp_vault, "r-000006", max_sources=1)
-        raw = tmp_vault.research_dir / "raw"
-        raw.mkdir(parents=True, exist_ok=True)
-        (raw / "a.pdf").write_bytes(b"%PDF")
-        (raw / "b.pdf").write_bytes(b"%PDF")
-        _write_tagged_note(tmp_vault, "s1", "r-000006", raw_file="raw/a.pdf")
-        _write_tagged_note(tmp_vault, "s2", "r-000006", raw_file="raw/b.pdf")
+        _write_tagged_note(tmp_vault, "s1", "r-000006")
+        _write_tagged_note(tmp_vault, "s2", "r-000006")
+        _add_source(tmp_vault, "s1", "https://example.com/a")
+        _add_source(tmp_vault, "s2", "https://example.com/b")
         m = set_step(tmp_vault, "r-000006", "1", "done")
         assert m["status"] == "blocked"
         assert m["blocked_on"] == "max_sources"
@@ -197,29 +200,69 @@ class TestReconcileSpend:
         assert m["steps"]["2"]["status"] == "done"
         assert m["counts_force_cleared"] == 1
         assert m["status"] == "running"
-        # A ceiling crossed in this done blocks; the *next* done --force clears.
-        m_reblock = set_step(tmp_vault, "r-000008", "10", "done")
+        # Unchanged counts stay clear across subsequent steps.
+        m_same = set_step(tmp_vault, "r-000008", "10", "done")
+        assert m_same["status"] == "running"
+        _write_tagged_note(tmp_vault, "y3", "r-000008")
+        m_reblock = set_step(tmp_vault, "r-000008", "15", "done")
         assert m_reblock["status"] == "blocked"
-        m2 = set_step(tmp_vault, "r-000008", "15", "done", force=True)
-        assert m2["steps"]["15"]["status"] == "done"
+        m2 = set_step(tmp_vault, "r-000008", "16", "done", force=True)
+        assert m2["steps"]["16"]["status"] == "done"
         assert m2["counts_force_cleared"] == 2
 
-    def test_force_clear_cap_leaves_run_blocked(self, tmp_vault):
+    def test_force_clear_cap_rejects_step_before_recording_it(self, tmp_vault):
         init_run(tmp_vault, "r-000010", max_notes=1)
-        _write_tagged_note(tmp_vault, "z1", "r-000010")
-        _write_tagged_note(tmp_vault, "z2", "r-000010")
-        for step in ("1", "2", "10"):
-            set_step(tmp_vault, "r-000010", step, "done")
-            m = set_step(tmp_vault, "r-000010", step, "done", force=True)
+        for i in range(3):
+            _write_tagged_note(tmp_vault, f"z{i}", "r-000010")
+            set_step(tmp_vault, "r-000010", str(i * 2 + 1), "done")
+            m = set_step(tmp_vault, "r-000010", str(i * 2 + 2), "done", force=True)
             assert m["status"] == "running"
         assert m["counts_force_cleared"] == 3
-        set_step(tmp_vault, "r-000010", "15", "done")
-        m4 = set_step(tmp_vault, "r-000010", "15", "done", force=True)
-        # Cap reached: step still records, run stays blocked on the ceiling.
-        assert m4["steps"]["15"]["status"] == "done"
+        _write_tagged_note(tmp_vault, "z3", "r-000010")
+        set_step(tmp_vault, "r-000010", "7", "done")
+        with pytest.raises(RunError, match="force-clear limit"):
+            set_step(tmp_vault, "r-000010", "8", "done", force=True)
+        m4 = load_manifest(tmp_vault, "r-000010")
+        assert "8" not in m4["steps"]
         assert m4["status"] == "blocked"
-        assert m4["blocked_on"] == "max_notes"
         assert m4["counts_force_cleared"] == 3
+
+    def test_resume_clear_holds_until_count_increases(self, tmp_vault, monkeypatch):
+        from typer.testing import CliRunner
+
+        from hyperresearch.cli import app
+
+        tag = "r-resume-000001"
+        init_run(tmp_vault, tag, max_notes=1)
+        _write_tagged_note(tmp_vault, "resume-1", tag)
+        set_step(tmp_vault, tag, "1", "done")
+        monkeypatch.chdir(tmp_vault.root)
+        result = CliRunner().invoke(app, ["run", "resume", tag, "--json"])
+        assert result.exit_code == 0
+        assert load_manifest(tmp_vault, tag)["counts_force_cleared"] == 1
+        assert set_step(tmp_vault, tag, "2", "done")["status"] == "running"
+        _write_tagged_note(tmp_vault, "resume-2", tag)
+        assert set_step(tmp_vault, tag, "10", "done")["blocked_on"] == "max_notes"
+
+    def test_resume_cannot_bypass_clear_cap(self, tmp_vault, monkeypatch):
+        from typer.testing import CliRunner
+
+        from hyperresearch.cli import app
+
+        tag = "r-resume-cap-000001"
+        init_run(tmp_vault, tag, max_notes=1)
+        monkeypatch.chdir(tmp_vault.root)
+        runner = CliRunner()
+        for i in range(3):
+            _write_tagged_note(tmp_vault, f"cap-{i}", tag)
+            set_step(tmp_vault, tag, str(i + 1), "done")
+            assert runner.invoke(app, ["run", "resume", tag, "--json"]).exit_code == 0
+        _write_tagged_note(tmp_vault, "cap-3", tag)
+        set_step(tmp_vault, tag, "4", "done")
+        result = runner.invoke(app, ["run", "resume", tag, "--json"])
+        assert result.exit_code == 1
+        assert "force-clear limit" in result.stdout
+        assert load_manifest(tmp_vault, tag)["status"] == "blocked"
 
 
 class TestBudgetGovernor:
@@ -276,6 +319,16 @@ class TestStatusSummary:
 
 
 class TestRunCli:
+    def test_reconcile_bad_tag_reports_error(self, tmp_vault, monkeypatch):
+        from typer.testing import CliRunner
+
+        from hyperresearch.cli import app
+
+        monkeypatch.chdir(tmp_vault.root)
+        result = CliRunner().invoke(app, ["run", "reconcile", "../bad", "--json"])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["ok"] is False
+
     def test_init_status_resume_roundtrip(self, tmp_vault, monkeypatch):
         from typer.testing import CliRunner
 

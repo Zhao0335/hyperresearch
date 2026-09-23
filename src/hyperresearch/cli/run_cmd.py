@@ -46,7 +46,7 @@ def run_init(
     vault_tag: str = typer.Argument(..., help="Collision-safe run tag (mint via `hyperresearch vault-tag <slug>`)"),
     profile: str = typer.Option("full", "--profile", help="Pipeline profile for this run"),
     budget: float | None = typer.Option(None, "--budget", help="Hard ceiling on estimated API-equivalent spend (the run blocks when the estimate crosses it; a value measure, not a bill, on subscription billing)"),
-    max_sources: int | None = typer.Option(None, "--max-sources", help="Observable ceiling on vault_tag-tagged sources with a raw_file; checked at step-done"),
+    max_sources: int | None = typer.Option(None, "--max-sources", help="Observable ceiling on fetched source URLs linked to vault_tag-tagged notes; checked at step-done"),
     max_notes: int | None = typer.Option(None, "--max-notes", help="Observable ceiling on notes tagged with this run's vault_tag; checked at step-done"),
     query_file: str | None = typer.Option(None, "--query-file", help="File whose verbatim contents become runs/<tag>/query.md"),
     json_output: bool = typer.Option(False, "--json", "-j", help="JSON output"),
@@ -188,12 +188,26 @@ def run_resume(
 ) -> None:
     """Print the exact position a recovering orchestrator should continue from."""
     from hyperresearch.core.hooks import step_skill_slug
-    from hyperresearch.core.runs import RunError, load_manifest, resume_position, set_status
+    from hyperresearch.core.runs import (
+        RunError,
+        clear_count_block,
+        load_manifest,
+        resume_position,
+        set_status,
+    )
 
     vault = _vault_or_exit(json_output)
     tag = _resolve_tag(vault, vault_tag, json_output)
     try:
         manifest = load_manifest(vault, tag)
+        if manifest["status"] == "blocked" and manifest.get("blocked_on") in (
+            "max_sources", "max_notes"
+        ):
+            manifest = clear_count_block(vault, tag)
+        elif manifest["status"] in ("paused", "blocked", "failed"):
+            manifest = set_status(vault, tag, "running")
+        position = resume_position(manifest)
+        run_dir = str(vault.run_dir(tag))
     except (RunError, VaultError) as e:
         if json_output:
             output(error(str(e), "RUN_ERROR"), json_mode=True)
@@ -201,13 +215,9 @@ def run_resume(
             console.print(f"[red]Error:[/] {e}")
         raise typer.Exit(1)
 
-    position = resume_position(manifest)
-    if manifest["status"] in ("paused", "blocked", "failed"):
-        set_status(vault, tag, "running")
-
     data = {
         "vault_tag": tag,
-        "run_dir": str(vault.run_dir(tag)),
+        "run_dir": run_dir,
         "profile": manifest["profile"],
         **position,
         # Looked up from the installer's step-skill roster, not rebuilt by
@@ -316,14 +326,14 @@ def run_reconcile(
     vault_tag: str | None = typer.Argument(None, help="Run tag (default: newest run)"),
     json_output: bool = typer.Option(False, "--json", "-j", help="JSON output"),
 ) -> None:
-    """Fold vault_tag-filtered notes/raw sources into spend counters (issue #92)."""
+    """Fold vault_tag-filtered notes/fetched URLs into spend counters (issue #92)."""
     from hyperresearch.core.runs import RunError, reconcile_spend_from_disk
 
     vault = _vault_or_exit(json_output)
     tag = _resolve_tag(vault, vault_tag, json_output)
     try:
         manifest = reconcile_spend_from_disk(vault, tag)
-    except RunError as e:
+    except (RunError, VaultError) as e:
         if json_output:
             output(error(str(e), "RUN_ERROR"), json_mode=True)
         else:
