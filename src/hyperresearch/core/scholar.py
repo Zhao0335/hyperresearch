@@ -44,7 +44,9 @@ META_DOI_RE = re.compile(
     r"content=[\"']\s*(?:doi:)?\s*(10\.[^\"']+)[\"']",
     re.IGNORECASE,
 )
-BODY_DOI_RE = re.compile(r"\bDOI:?\s*(10\.\d{4,9}/[^\s\"'<>\])}]+)", re.IGNORECASE)
+# Fetched bodies carry markdown code spans (`DOI: 10.x/y`, DOI: `10.x/y`), so a
+# backtick may open the DOI and never belongs to it.
+BODY_DOI_RE = re.compile(r"\bDOI:?\s*`?(10\.\d{4,9}/[^\s\"'<>\])}`]+)", re.IGNORECASE)
 
 # Per-host courtesy delay between UNCACHED requests, seconds.
 _HOST_DELAY = {
@@ -300,7 +302,7 @@ def lookup_metadata(conn, doi: str, ttl_days: int, fresh: bool = False) -> dict 
         return {
             "citation_count": data.get("citationCount"),
             "venue": data.get("venue") or None,
-            "is_retracted": False,  # S2 has no retraction flag
+            "is_retracted": None,  # S2 has no retraction flag
         }
 
     data = _fetch_json(
@@ -334,7 +336,7 @@ def lookup_metadata(conn, doi: str, ttl_days: int, fresh: bool = False) -> dict 
     return {
         "citation_count": data.get("citationCount"),
         "venue": data.get("venue") or None,
-        "is_retracted": False,
+        "is_retracted": None,
     }
 
 
@@ -453,7 +455,7 @@ def score_sources(
             (
                 meta_result["citation_count"],
                 meta_result["venue"],
-                1 if meta_result["is_retracted"] else 0,
+                None if meta_result["is_retracted"] is None else int(meta_result["is_retracted"]),
                 row["id"],
             ),
         )
@@ -465,7 +467,7 @@ def score_sources(
             fm, body = parse_frontmatter(text)
             fm.citation_count = meta_result["citation_count"]
             fm.venue = meta_result["venue"]
-            fm.is_retracted = bool(meta_result["is_retracted"])
+            fm.is_retracted = meta_result["is_retracted"]
             note_path.write_text(render_note(fm, body), encoding="utf-8")
 
         scored += 1
