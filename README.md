@@ -1,6 +1,6 @@
 <img width="1280" height="400" alt="hyperresearch-readme-hero-1280x400" src="https://github.com/user-attachments/assets/320680fc-bc56-4eac-9ec2-7ec46d4bde98" />
 
-<h3 align="center">The Most Powerful Deep Research Harness</h3>
+<h3 align="center">The Most Powerful Deep Research Harness: a deep research skill for Claude Code and OpenAI Codex</h3>
 
 <p align="center">
   <a href="https://pypi.org/project/hyperresearch/"><img src="https://img.shields.io/pypi/v/hyperresearch" alt="PyPI version"></a>
@@ -8,10 +8,24 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/jordan-gibbs/hyperresearch" alt="License: MIT"></a>
   <a href="https://github.com/jordan-gibbs/hyperresearch"><img src="https://img.shields.io/github/stars/jordan-gibbs/hyperresearch?style=social" alt="GitHub stars"></a>
 </p>
+<p align="center">
+  <a href="#install"><img src="https://img.shields.io/badge/Claude%20Code-supported-D97757" alt="Works in Claude Code"></a>
+  <a href="#codex"><img src="https://img.shields.io/badge/OpenAI%20Codex-supported-10A37F" alt="Works in OpenAI Codex"></a>
+</p>
 
 ---
 
-**Hyperresearch turns Claude Code into a deep research agent: one that currently leads the DeepResearch-Bench RACE leaderboard (benchmarked internally).** A tier-adaptive 16-step pipeline takes one prompt and produces an adversarially-audited report with full source provenance. Every source it reads lands in a persistent, searchable vault, so each session starts smarter than the last.
+**Hyperresearch turns Claude Code into a deep research agent: one that currently leads the DeepResearch-Bench RACE leaderboard (benchmarked internally). It runs in OpenAI Codex too.** A tier-adaptive 16-step pipeline takes one prompt and produces an adversarially-audited report with full source provenance. Every source it reads lands in a persistent, searchable vault, so each session starts smarter than the last.
+
+> [!NOTE]
+> **New: hyperresearch runs on OpenAI Codex.** One command installs the full pipeline for Codex: entry skill, step procedures, the subagent roster as Codex custom agents, and a Stop hook that keeps Codex from skipping steps. Same vault, same ship gate as on Claude Code.
+>
+> ```bash
+> pip install hyperresearch && hyperresearch install . --target codex
+> codex --sandbox workspace-write -c sandbox_workspace_write.network_access=true   # then: $hyperresearch <question>
+> ```
+>
+> Codex support ships in the next PyPI release; until then install from GitHub with `pip install git+https://github.com/jordan-gibbs/hyperresearch`. Details and what differs on Codex: [Codex](#codex).
 
 <p align="center">
   <img src="assets/benchmark.png" alt="DeepResearch-Bench top-5 hyperresearch leads the chart ahead of Grep Deep Research, Cellcog Max, nvidia-aiq, Gemini Deep Research, and OpenAI Deep Research" width="780">
@@ -36,22 +50,81 @@ manuscript version with [scholarly metadata filters](docs/source-search.md).
 
 ## Install
 
+Works in **Claude Code** and **OpenAI Codex**: same pipeline, same vault.
+
 ```bash
 cd your-project
-pip install hyperresearch && hyperresearch install
+pip install hyperresearch
+
+hyperresearch install                    # Claude Code, then: /hyperresearch <anything>
+hyperresearch install . --target codex   # OpenAI Codex, then: $hyperresearch <anything>
 ```
 
-Then `/hyperresearch <anything>` in Claude Code.
+`--target all` installs both side by side. Codex sessions need write access and network, [see below](#codex).
+
+Prefer a plugin or a single skill? Each route below installs one bootstrap skill, `deep-research`, that sets the pipeline up in the current project on first use. It still needs `pip install hyperresearch`.
+
+| | Claude Code | OpenAI Codex |
+|---|---|---|
+| **Plugin** | `/plugin marketplace add jordan-gibbs/hyperresearch`<br>`/plugin install hyperresearch@hyperresearch` | `codex plugin marketplace add jordan-gibbs/hyperresearch`<br>`codex plugin add hyperresearch@hyperresearch` |
+| **Skill** ([skills.sh](https://skills.sh)) | `npx skills add jordan-gibbs/hyperresearch -a claude-code` | `npx skills add jordan-gibbs/hyperresearch -a codex` |
+| **Invoke** | `/hyperresearch:deep-research <question>` (plugin)<br>`/deep-research <question>` (skill) | `$hyperresearch:deep-research <question>` (plugin)<br>`$deep-research <question>` (skill) |
+
+Or just ask for deep research in plain words; the skill triggers on its description.
 
 > Python 3.11–3.14.
 >
 > Power users: `hyperresearch install --global` makes `/hyperresearch` reachable from every Claude Code session anywhere, at the cost of ~15 lines in every session's system reminder. Per-project install (above) keeps unrelated CC sessions clean.
 
+### The bootstrap skill
+
+The repo is a Claude Code plugin marketplace, a Codex plugin marketplace, and a skills.sh source, and all three ship the same skill, `deep-research`. It checks for the `hyperresearch` CLI, runs `hyperresearch install` for the agent it is running in (`--target codex` under Codex), and hands off to the pipeline. The pipeline itself still comes from the Python package.
+
+If Claude Code does not pick up the newly installed skills and subagents, restart it in the same directory and run `/hyperresearch <question>`. Codex discovers skills at session start, so on first use the bootstrap reads the freshly installed entry skill directly; later sessions can start with `$hyperresearch <question>`.
+
+### Codex
+
+The same pipeline runs on the [OpenAI Codex CLI](https://github.com/openai/codex).
+
+```bash
+cd your-project
+pip install hyperresearch && hyperresearch install . --target codex
+```
+
+This installs the entry skill at `.agents/skills/hyperresearch/`, the step procedures under `.hyperresearch/codex/steps/`, the subagents as custom agents in `.codex/agents/`, a Stop hook in `.codex/hooks.json`, and a short block in `AGENTS.md`. `--target all` installs the Claude Code and Codex versions side by side. `--global --target codex` puts the entry skill in `~/.agents/skills/` and the agents in `~/.codex/agents/`.
+
+Research needs to write files and reach the network, and Codex allows neither by default. Start the session with both enabled, then invoke the skill:
+
+```bash
+codex --sandbox workspace-write -c sandbox_workspace_write.network_access=true
+# then, in the session:
+$hyperresearch <anything>
+
+# non-interactive:
+codex exec --sandbox workspace-write -c sandbox_workspace_write.network_access=true \
+  --dangerously-bypass-hook-trust "\$hyperresearch <anything>"
+```
+
+You pass these as flags; hyperresearch never edits your Codex config. `codex exec` cannot ask you to trust the project's hooks, so without `--dangerously-bypass-hook-trust` the Stop hook below does not run. Only pass it for hooks you have read (`.codex/hooks.json`).
+
+Subagents inherit the session's model. To pin a model per role, add a `codex_models` override to a profile in `.hyperresearch/config.toml` and re-run `hyperresearch install . --target codex`:
+
+```toml
+[profile.full]
+codex_models = { fetcher = "gpt-5.4-mini", critics = "gpt-5.5" }
+```
+
+What is different on Codex:
+
+- **No browser lane.** Codex has no Claude-in-Chrome equivalent, so fetches blocked by a login wall or bot wall stay in the escalation queue, and the final message lists them for you.
+- **Tool locks are instructions, not enforcement.** Codex custom agents have no per-agent tool allowlist. The patcher and polish auditor are told to make surgical edits only, but nothing stops them from doing more.
+- **A Stop hook guards the pipeline.** `hyperresearch run stop-gate` blocks the session from ending while the newest run is mid-pipeline, so Codex cannot quietly answer inline and stop. Codex runs a project's hooks only after you trust them.
+
 ---
 
 ## The 16-step research pipeline
 
-The entry skill is a thin router. It pins down the canonical research query, then invokes one step skill per phase via Claude Code's `Skill` tool. Each step's procedure loads into context only when that step actually runs. That's what stops a long pipeline from quietly dropping steps as its context rots.
+The entry skill is a thin router. It pins down the canonical research query, then invokes one step skill per phase via Claude Code's `Skill` tool (on Codex, it reads one step file per phase from `.hyperresearch/codex/steps/`). Each step's procedure loads into context only when that step actually runs. That's what stops a long pipeline from quietly dropping steps as its context rots.
 
 | # | Step | What it does | Tiers |
 |---|---|---|---|
@@ -115,7 +188,7 @@ hyperresearch run status -j                                      # see what step
 
 ### The two load-bearing principles
 
-1. **Patch, never regenerate.** After step 11 produces the synthesized report (or step 10 for light tier), the only modifications are surgical Edit hunks. The patcher and polish auditor are tool-locked to `[Read, Edit]` at the Claude Code allowlist level so they physically cannot Write a new draft. Per-hunk caps make "just rewrite it" mechanically impossible. Critic findings that don't fit a small hunk escalate as structural issues.
+1. **Patch, never regenerate.** After step 11 produces the synthesized report (or step 10 for light tier), the only modifications are surgical Edit hunks. The patcher and polish auditor are tool-locked to `[Read, Edit]` at the Claude Code allowlist level so they physically cannot Write a new draft (on Codex this lock is an instruction, not enforcement). Per-hunk caps make "just rewrite it" mechanically impossible. Critic findings that don't fit a small hunk escalate as structural issues.
 
 2. **Canonical research query is gospel.** The verbatim user prompt is persisted to `research/runs/<vault_tag>/query.md` once and re-read by every subsequent step and every spawned subagent. Wrapper requirements (save paths, citation format, terminal sections) are a separate contract.
 
@@ -273,6 +346,8 @@ The `[web] provider` setting in `.hyperresearch/config.toml` picks how pages are
 provider = "crawl4ai"
 ```
 
+Every fetch lane verifies TLS certificates by default: `builtin`, the PDF downloads, and crawl4ai's headless browser. A bad certificate fails the fetch with `CertVerificationError`; nothing retries it unverified. For a cert-broken site you trust, set the opt-out for the lane that refused it under `[fetch]`: `browser_verify_tls = false` for crawl4ai's headless browser, `pdf_verify_tls = false` for PDFs. The builtin provider has no opt-out. The visible-window browser used with a login profile (`--visible`, and the LinkedIn / Twitter-style domains) still accepts bad certificates, because some of the walled sites it exists for serve broken chains.
+
 ---
 
 ## Authenticated crawling + the browser lane
@@ -367,7 +442,7 @@ Publishers block their own open-access PDFs often enough that one attempt isn't 
 
 - It doesn't replace your judgment on which sources matter. The agent picks, you steer.
 - It can't fetch what's behind a paywall you haven't logged into. Open-access recovery finds a legal free copy when one exists — even when the publisher blocks the fetch outright — but when none exists you get the abstract, or nothing, and the note says so.
-- It runs on Anthropic models via the subagent roster (per-agent assignments come from the profile's model map). Usage scales with tier, gear, and corpus size. If anyone wants to port this to Codex, put up a PR! 
+- On Claude Code it runs on Anthropic models via the subagent roster (per-agent assignments come from the profile's model map). On Codex, subagents use the session's model unless a Codex override is configured. Usage scales with tier, gear, and corpus size. The Codex port is new and has not been benchmarked yet; the Claude Code pipeline is the one the leaderboard numbers come from.
 - The lint gate catches **structural** failures (missing scaffold, broken provenance, unresolved CRITICALs). It cannot guarantee factual accuracy, that's still your call.
 
 ---
@@ -375,7 +450,7 @@ Publishers block their own open-access PDFs often enough that one attempt isn't 
 ## Requirements
 
 - Python 3.11+
-- [Claude Code](https://claude.com/claude-code)
+- [Claude Code](https://claude.com/claude-code), or the [OpenAI Codex CLI](https://github.com/openai/codex)
 
 ---
 

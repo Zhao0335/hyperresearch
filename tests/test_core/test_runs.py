@@ -15,6 +15,7 @@ from hyperresearch.core.runs import (
     load_manifest,
     reconcile_spend_from_disk,
     resume_position,
+    run_resume_position,
     set_step,
     status_summary,
 )
@@ -81,6 +82,28 @@ class TestStepsAndResume:
         for s in ["1", "2", "10", "15", "16"]:
             set_step(tmp_vault, "t-000003", s, "done")
         assert resume_position(load_manifest(tmp_vault, "t-000003"))["next_step"] is None
+
+    def test_declared_light_tier_resumes_past_skipped_steps(self, tmp_vault):
+        """A full-gear run that step 1 classified `light` resumes at step 10,
+        not at step 3 — the tier's step set wins, as in the ship gate."""
+        init_run(tmp_vault, "t-000006", profile="full")
+        (tmp_vault.run_dir("t-000006") / "prompt-decomposition.json").write_text(
+            json.dumps({"pipeline_tier": "light"}), encoding="utf-8"
+        )
+        set_step(tmp_vault, "t-000006", "1", "done")
+        set_step(tmp_vault, "t-000006", "2", "done")
+        manifest = load_manifest(tmp_vault, "t-000006")
+        pos = run_resume_position(tmp_vault, manifest)
+        assert pos["next_step"] == "10"
+        assert pos["remaining_steps"] == ["10", "15", "16"]
+        assert status_summary(tmp_vault, "t-000006")["resume"]["next_step"] == "10"
+
+    def test_no_declared_tier_keeps_profile_steps(self, tmp_vault):
+        init_run(tmp_vault, "t-000007", profile="full")
+        set_step(tmp_vault, "t-000007", "1", "done")
+        set_step(tmp_vault, "t-000007", "2", "done")
+        pos = run_resume_position(tmp_vault, load_manifest(tmp_vault, "t-000007"))
+        assert pos["next_step"] == "3"
 
     def test_invalid_status_rejected(self, tmp_vault):
         init_run(tmp_vault, "t-000004")
@@ -263,6 +286,33 @@ class TestReconcileSpend:
         assert result.exit_code == 1
         assert "force-clear limit" in result.stdout
         assert load_manifest(tmp_vault, tag)["status"] == "blocked"
+
+    def test_resume_count_block_honors_declared_tier(self, tmp_vault, monkeypatch):
+        from typer.testing import CliRunner
+
+        from hyperresearch.cli import app
+
+        tag = "r-resume-tier-000001"
+        init_run(tmp_vault, tag, profile="full", max_notes=1)
+        (tmp_vault.run_dir(tag) / "prompt-decomposition.json").write_text(
+            json.dumps({"pipeline_tier": "light"}), encoding="utf-8"
+        )
+        set_step(tmp_vault, tag, "1", "done")
+        _write_tagged_note(tmp_vault, "tier-note", tag)
+        assert set_step(tmp_vault, tag, "2", "done")["blocked_on"] == "max_notes"
+        monkeypatch.chdir(tmp_vault.root)
+
+        result = CliRunner().invoke(app, ["run", "resume", tag, "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)["data"]
+        assert data["next_step"] == "10"
+        assert data["remaining_steps"] == ["10", "15", "16"]
+        assert data["codex_step_file"].endswith(f"/{data['skill_to_invoke']}.md")
+        manifest = load_manifest(tmp_vault, tag)
+        assert manifest["counts_force_cleared"] == 1
+        assert manifest["counts_clear_baselines"]["max_notes"] == 1
+        assert set_step(tmp_vault, tag, "10", "done")["status"] == "running"
 
 
 class TestBudgetGovernor:

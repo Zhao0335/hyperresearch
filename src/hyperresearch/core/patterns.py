@@ -23,9 +23,124 @@ import re
 # is_valid_wiki_link_target's bracket-balance check; now it never matches.
 WIKI_LINK_RE = re.compile(r"\[\[([^\]\[|]+)(?:\|[^\]\[]+)?\]\](?!\()")
 
-# Code block patterns for stripping before link extraction
-CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
-INLINE_CODE_RE = re.compile(r"`[^`]+`")
+# --- Code stripping before link extraction and indexing ---------------------
+#
+# Code must be removed before WIKI_LINK_RE runs: bash test syntax
+# (`[[ -n "$k" ]]`) is lexically a wiki-link. This used to be two regexes,
+# ```.*?``` and `[^`]+`, which closed every span at the first backtick run
+# of any length. The builtin provider (#129) fences code with a run longer
+# than any inside it, as CommonMark requires, so code holding an odd number
+# of ``` ended the block early and leaked its [[ ]] into the parser (#140).
+#
+# The rules follow CommonMark where it matters here:
+#
+# - A fenced block opens on a line whose first non-blank characters are 3+
+#   backticks with no backtick after them, and closes on a line holding
+#   only a run of AT LEAST that many backticks. An opener with no such line
+#   after it is literal text, not a block to the end of the note: CommonMark
+#   would run it to the end, but a prose line that happens to start with ```
+#   would then drop the rest of the note from links and search. The builtin
+#   provider always closes its fences, so #140 does not depend on the
+#   unclosed case. Any indentation is accepted (fences inside list items).
+#   Tilde fences are not recognised, as before.
+# - An inline span opened by N backticks closes at the next run of EXACTLY
+#   N backticks; an unmatched run is literal text. Spans may cross lines,
+#   as the old regex allowed. Backtick runs that are not fences (mid-line
+#   ```x```, a line-start run followed by more backticks) are inline runs.
+#
+# Fetched bodies are attacker-controlled and this runs on every sync, so
+# it is a scanner, not a regex: a backreference regex re-scans to the end
+# of the text for every unclosed run and goes superlinear on backtick
+# floods. Both passes below are linear.
+#
+# Stripped code is replaced by the newlines it held (a space for a span
+# on one line), so sync's per-line link numbers stay true and text on
+# either side of a span cannot fuse into a new `[[`.
+
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+def _strip_fenced_blocks(text: str) -> str:
+    lines = text.split("\n")
+    runs: list[int] = []
+    closers: list[int] = []  # run length if the line could close a fence, else 0
+    for line in lines:
+        s = line.lstrip(" \t")
+        run = len(s) - len(s.lstrip("`"))
+        runs.append(run)
+        closers.append(run if run >= 3 and not s[run:].strip(" \t\r") else 0)
+    # longest_after[i]: the longest closer on any line after line i. An opener
+    # whose run nothing after it can match stays literal text, so each check
+    # is O(1) and the pass stays linear.
+    longest_after = [0] * len(lines)
+    best = 0
+    for i in range(len(lines) - 1, -1, -1):
+        longest_after[i] = best
+        best = max(best, closers[i])
+
+    out: list[str] = []
+    fence = 0  # length of the open fence's backtick run; 0 = not in a block
+    for i, line in enumerate(lines):
+        run = runs[i]
+        if fence:
+            if closers[i] >= fence:
+                fence = 0
+            out.append("")
+        elif (
+            run >= 3
+            and "`" not in line.lstrip(" \t")[run:]
+            and longest_after[i] >= run
+        ):
+            fence = run
+            out.append("")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _strip_inline_code(text: str) -> str:
+    runs = [m.span() for m in _BACKTICK_RUN_RE.finditer(text)]
+    if len(runs) < 2:
+        return text
+    # Run indices grouped by length; each group's cursor only moves forward,
+    # so finding every closer costs O(runs) in total.
+    by_len: dict[int, list[int]] = {}
+    for i, (a, b) in enumerate(runs):
+        by_len.setdefault(b - a, []).append(i)
+    cursor = dict.fromkeys(by_len, 0)
+
+    out: list[str] = []
+    pos = 0
+    i = 0
+    while i < len(runs):
+        a, b = runs[i]
+        n = b - a
+        group = by_len[n]
+        k = cursor[n]
+        while k < len(group) and group[k] <= i:
+            k += 1
+        cursor[n] = k
+        if k == len(group):
+            i += 1  # no closer: the run is literal text
+            continue
+        j = group[k]
+        end = runs[j][1]
+        newlines = text.count("\n", a, end)
+        out.append(text[pos:a])
+        out.append("\n" * newlines if newlines else " ")
+        pos = end
+        i = j + 1
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def strip_code(text: str) -> str:
+    """Remove fenced code blocks, then inline code spans, from markdown.
+
+    Run this before WIKI_LINK_RE so code is never parsed as links. Linear in
+    the length of the text, including on backtick floods.
+    """
+    return _strip_inline_code(_strip_fenced_blocks(text))
 
 
 # Citation-footnote patterns that should NOT be treated as wiki-links even
